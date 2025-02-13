@@ -14,17 +14,11 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     Object[][] data;
 
     volatile int readIndex = -1;
-
     volatile int writeIndex = -1;
-
     private final AtomicInteger count = new AtomicInteger();
-
     private final ReentrantLock takeLock = new ReentrantLock();
-
     private final Condition notEmpty = takeLock.newCondition();
-
     private final ReentrantLock putLock = new ReentrantLock();
-
     private final Condition notFull = putLock.newCondition();
 
     private void signalNotEmpty() {
@@ -95,13 +89,14 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
             }
             count.set(n);
         } catch (InterruptedException e) {
-            e.printStackTrace();
+            Thread.currentThread().interrupt(); // Restore interrupted status
+            throw new RuntimeException(e);
         } finally {
             putLock.unlock();
         }
     }
 
-    static final int tableSizeFor(int cap) {
+    static int tableSizeFor(int cap) {
         int n = cap - 1;
         n |= n >>> 1;
         n |= n >>> 2;
@@ -111,7 +106,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         return (n < 0) ? 1 : (n >= MAXIMUM_CAPACITY) ? MAXIMUM_CAPACITY : n + 1;
     }
 
-    static final int getIntHigh(int cap) {
+    static int getIntHigh(int cap) {
         int high = 0;
         while ((cap & 1) == 0) {
             high++;
@@ -120,7 +115,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         return high;
     }
 
-    static final int subareaSizeFor(int cap) {
+    static int subareaSizeFor(int cap) {
         int n = cap - 1;
         n |= n >>> 1;
         n |= n >>> 2;
@@ -147,73 +142,84 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     @Override
-    public boolean offer(Object o) {
-        int localWriteIndex = 0;
-        synchronized (this) {
-            if (writeIndex > readIndex + maxSize) {
+    public boolean offer(E o) {
+        if (o == null) {
+            throw new NullPointerException();
+        }
+        putLock.lock();
+        try {
+            if (count.get() >= capacity) {
+                return false;
+            }
+            int localWriteIndex = writeIndex + 1;
+            if (localWriteIndex > readIndex + maxSize) {
                 return false;
             }
             count.incrementAndGet();
-            localWriteIndex = ++writeIndex;
+            writeIndex = localWriteIndex;
+            int row = (localWriteIndex >> bitHigh) & rowOffice;
+            int column = localWriteIndex & colOffice;
+            if (column == 0 && row == 0) {
+                refreshIndex();
+            }
+            data[row][column] = o;
+            return true;
+        } finally {
+            putLock.unlock();
         }
-        int row = (localWriteIndex >> bitHigh) & (rowOffice);
-        int column = localWriteIndex & (colOffice);
-        if (column == 0 && row == 0) {
-            refreshIndex();
-        }
-        data[row][column] = o;
-        return true;
     }
 
     @Override
     public E poll() {
-        int localReadIndex = 0;
-        synchronized (this) {
-            if (writeIndex > readIndex) {
-                localReadIndex = ++readIndex;
-                count.getAndIncrement();
-            } else {
+        takeLock.lock();
+        try {
+            if (writeIndex <= readIndex) {
                 return null;
             }
+            int localReadIndex = readIndex + 1;
+            readIndex = localReadIndex;
+            int row = (localReadIndex >> bitHigh) & rowOffice;
+            int column = localReadIndex & colOffice;
+            if (column == 0 && row == 0) {
+                refreshIndex();
+            }
+            E result = (E) data[row][column];
+            count.decrementAndGet();
+            return result;
+        } finally {
+            takeLock.unlock();
         }
-        int row = (localReadIndex >> bitHigh) & (rowOffice);
-        int column = localReadIndex & (colOffice);
-        if (column == 0 && row == 0) {
-            refreshIndex();
-        }
-        return (E) data[row][column];
     }
 
     E ergodic(Integer index) {
-        int localReadIndex = 0;
         if (index > writeIndex || index < readIndex) {
             return null;
         }
-        int row = (index >> bitHigh) & (rowOffice);
-        int column = index & (colOffice);
+        int row = (index >> bitHigh) & rowOffice;
+        int column = index & colOffice;
         if (column == 0 && row == 0) {
             refreshIndex();
         }
         return (E) data[row][column];
     }
 
-
     @Override
     public E peek() {
-        int localReadIndex = 0;
-        synchronized (this) {
-            if (writeIndex > readIndex) {
-                localReadIndex = readIndex;
-            } else {
+        takeLock.lock();
+        try {
+            if (writeIndex <= readIndex) {
                 return null;
             }
+            int localReadIndex = readIndex;
+            int row = (localReadIndex >> bitHigh) & rowOffice;
+            int column = localReadIndex & colOffice;
+            if (column == 0 && row == 0) {
+                refreshIndex();
+            }
+            return (E) data[row][column];
+        } finally {
+            takeLock.unlock();
         }
-        int row = (localReadIndex >> bitHigh) & (rowOffice);
-        int column = localReadIndex & (colOffice);
-        if (column == 0 && row == 0) {
-            refreshIndex();
-        }
-        return (E) data[row][column];
     }
 
     @Override
@@ -230,7 +236,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
                 notFull.await();
             }
             offer(o);
-            c = count.getAndIncrement();
+            c = count.get();
             if (c + 1 < capacity) {
                 notFull.signal();
             }
@@ -243,7 +249,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     @Override
-    public boolean offer(Object o, long timeout, TimeUnit unit) throws InterruptedException {
+    public boolean offer(E o, long timeout, TimeUnit unit) throws InterruptedException {
         if (o == null) {
             throw new NullPointerException();
         }
@@ -260,7 +266,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
                 nanos = notFull.awaitNanos(nanos);
             }
             offer(o);
-            c = count.getAndIncrement();
+            c = count.get();
             if (c + 1 < capacity) {
                 notFull.signal();
             }
@@ -285,7 +291,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
                 notEmpty.await();
             }
             x = poll();
-            c = count.getAndDecrement();
+            c = count.get();
             if (c > 1) {
                 notEmpty.signal();
             }
@@ -296,7 +302,6 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
             signalNotFull();
         }
         return x;
-
     }
 
     @Override
@@ -315,7 +320,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
                 nanos = notEmpty.awaitNanos(nanos);
             }
             x = poll();
-            c = count.getAndDecrement();
+            c = count.get();
             if (c > 1) {
                 notEmpty.signal();
             }
@@ -333,70 +338,53 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         return capacity - count.get();
     }
 
-    /**
-     * 没有实现此方法
-     *
-     * @param o
-     * @return
-     */
     @Override
     public boolean remove(Object o) {
-        return false;
+        fullyLock();
+        try {
+            for (int index = readIndex; readIndex >= index || index <= writeIndex; index++) {
+                if (o.equals(ergodic(index))) {
+                    // Remove the element and shift the rest
+                    for (int i = index; i < writeIndex; i++) {
+                        ergodic(i).equals(ergodic(i + 1));
+                    }
+                    writeIndex--;
+                    count.decrementAndGet();
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            fullyUnlock();
+        }
     }
 
-
-    /**
-     * 没有实现此方法
-     *
-     * @param o
-     * @return
-     */
     @Override
     public boolean equals(Object o) {
-        return false;
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        RingBlockingQueue<?> that = (RingBlockingQueue<?>) o;
+        return Arrays.deepEquals(data, that.data);
     }
 
-    /**
-     * 没有实现此方法
-     *
-     * @return
-     */
     @Override
     public int hashCode() {
         return Arrays.deepHashCode(data);
     }
 
-    /**
-     * 没有实现此方法
-     *
-     * @param c
-     * @return
-     */
     @Override
     public boolean retainAll(Collection c) {
-        return false;
+        throw new UnsupportedOperationException("Not supported yet.");
     }
 
-    /**
-     * 没有实现此方法
-     *
-     * @param c
-     * @return
-     */
     @Override
     public boolean removeAll(Collection c) {
-        return false;
+        throw new UnsupportedOperationException("Not supported yet.");
     }
 
-    /**
-     * 没有实现此方法
-     *
-     * @param c
-     * @return
-     */
     @Override
     public boolean containsAll(Collection c) {
-        return false;
+        throw new UnsupportedOperationException("Not supported yet.");
     }
 
     @Override
@@ -427,14 +415,28 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
-    /**
-     * 没有实现删除方法，没有实现迭代器
-     *
-     * @return
-     */
     @Override
     public Iterator<E> iterator() {
-        return null;
+        return new Iterator<E>() {
+            private int currentIndex = readIndex;
+            private final int expectedModCount = count.get();
+
+            @Override
+            public boolean hasNext() {
+                return currentIndex < writeIndex;
+            }
+
+            @Override
+            public E next() {
+                if (currentIndex >= writeIndex) {
+                    throw new NoSuchElementException();
+                }
+                if (expectedModCount != count.get()) {
+                    throw new ConcurrentModificationException();
+                }
+                return (E) ergodic(currentIndex++);
+            }
+        };
     }
 
     void fullyLock() {
@@ -442,9 +444,6 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         takeLock.lock();
     }
 
-    /**
-     * Unlocks to allow both puts and takes.
-     */
     void fullyUnlock() {
         takeLock.unlock();
         putLock.unlock();
@@ -467,18 +466,17 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     @Override
-    public <E> E[] toArray(E[] a) {
+    public <T> T[] toArray(T[] a) {
         fullyLock();
         try {
             int size = count.get();
             if (a.length < size) {
-                a = (E[]) java.lang.reflect.Array.newInstance
-                        (a.getClass().getComponentType(), size);
+                a = (T[]) java.lang.reflect.Array.newInstance(a.getClass().getComponentType(), size);
             }
 
             int k = 0;
             for (int index = readIndex; readIndex >= index || index <= writeIndex; index++) {
-                a[k++] = (E) ergodic(index);
+                a[k++] = (T) ergodic(index);
             }
             if (a.length > k) {
                 a[k] = null;
@@ -489,14 +487,13 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
-
     @Override
-    public int drainTo(Collection c) {
+    public int drainTo(Collection<? super E> c) {
         return drainTo(c, Integer.MAX_VALUE);
     }
 
     @Override
-    public int drainTo(Collection c, int maxElements) {
+    public int drainTo(Collection<? super E> c, int maxElements) {
         if (c == null) {
             throw new NullPointerException();
         }
@@ -511,18 +508,15 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         takeLock.lock();
         try {
             int n = Math.min(maxElements, count.get());
-            // count.get provides visibility to first n Nodes
             E e;
             int i = 0;
             try {
-                while ((e = remove()) != null) {
-
+                while (i < n && (e = poll()) != null) {
                     c.add(e);
-
+                    i++;
                 }
-                return n;
+                return i;
             } finally {
-                // Restore invariants even if c.add() threw
                 if (i > 0) {
                     signalNotFull = (count.getAndAdd(-i) == capacity);
                 }
@@ -544,17 +538,6 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
-    /**
-     * Retrieves and removes the head of this queue.  This method differs
-     * from {@link #poll poll} only in that it throws an exception if this
-     * queue is empty.
-     *
-     * <p>This implementation returns the result of <tt>poll</tt>
-     * unless the queue is empty.
-     *
-     * @return the head of this queue
-     * @throws NoSuchElementException if this queue is empty
-     */
     @Override
     public E remove() {
         E x = poll();
@@ -565,17 +548,6 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
-    /**
-     * Retrieves, but does not remove, the head of this queue.  This method
-     * differs from {@link #peek peek} only in that it throws an exception if
-     * this queue is empty.
-     *
-     * <p>This implementation returns the result of <tt>peek</tt>
-     * unless the queue is empty.
-     *
-     * @return the head of this queue
-     * @throws NoSuchElementException if this queue is empty
-     */
     @Override
     public E element() {
         E x = peek();
@@ -586,13 +558,6 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
-    /**
-     * Removes all of the elements from this queue.
-     * The queue will be empty after this call returns.
-     *
-     * <p>This implementation repeatedly invokes {@link #poll poll} until it
-     * returns <tt>null</tt>.
-     */
     @Override
     public void clear() {
         while (poll() != null) {
@@ -600,35 +565,6 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
-    /**
-     * Adds all of the elements in the specified collection to this
-     * queue.  Attempts to addAll of a queue to itself result in
-     * <tt>IllegalArgumentException</tt>. Further, the behavior of
-     * this operation is undefined if the specified collection is
-     * modified while the operation is in progress.
-     *
-     * <p>This implementation iterates over the specified collection,
-     * and adds each element returned by the iterator to this
-     * queue, in turn.  A runtime exception encountered while
-     * trying to add an element (including, in particular, a
-     * <tt>null</tt> element) may result in only some of the elements
-     * having been successfully added when the associated exception is
-     * thrown.
-     *
-     * @param c collection containing elements to be added to this queue
-     * @return <tt>true</tt> if this queue changed as a result of the call
-     * @throws ClassCastException       if the class of an element of the specified
-     *                                  collection prevents it from being added to this queue
-     * @throws NullPointerException     if the specified collection contains a
-     *                                  null element and this queue does not permit null elements,
-     *                                  or if the specified collection is null
-     * @throws IllegalArgumentException if some property of an element of the
-     *                                  specified collection prevents it from being added to this
-     *                                  queue, or if the specified collection is this queue
-     * @throws IllegalStateException    if not all the elements can be added at
-     *                                  this time due to insertion restrictions
-     * @see #add(Object)
-     */
     @Override
     public boolean addAll(Collection<? extends E> c) {
         if (c == null) {
