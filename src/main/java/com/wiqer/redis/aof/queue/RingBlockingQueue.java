@@ -1,5 +1,6 @@
 package com.wiqer.redis.aof.queue;
 
+import java.io.Serial;
 import java.io.Serializable;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
@@ -8,17 +9,56 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
+/**
+ * 环形阻塞队列实现
+ * 特点：
+ * 1. 使用二维数组存储，提高内存使用效率
+ * 2. 支持阻塞和非阻塞操作
+ * 3. 使用读写分离锁提高并发性能
+ * 4. 使用位运算优化性能
+ */
 public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQueue<E>, Serializable {
-    static final int MAXIMUM_CAPACITY = 1 << 29;
-    static final int MAXIMUM_SUBAREA = 1 << 12;
-    Object[][] data;
 
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    // 队列最大容量（2^29）
+    private static final int MAXIMUM_CAPACITY = 1 << 29;
+    // 子区域最大大小（2^12 = 4096）
+    private static final int MAXIMUM_SUBAREA = 1 << 12;
+    // 队列最小容量
+    private static final int MIN_CAPACITY = 16;
+
+    // 存储数据的二维数组
+    private final Object[][] data;
+    // 队列总容量
+    private final int capacity;
+    // 行索引掩码（用于位运算）
+    private final int rowOffice;
+    // 列索引掩码（用于位运算）
+    private final int colOffice;
+    // 数组行数
+    private final int rowSize;
+    // 位运算使用的位数
+    private final int bitHigh;
+    // 子区域大小
+    private final int subareaSize;
+    // 最大可用大小
+    private final int maxSize;
+
+    // 读取位置索引（volatile保证可见性）
     volatile int readIndex = -1;
+    // 写入位置索引（volatile保证可见性）
     volatile int writeIndex = -1;
+    // 当前元素数量
     private final AtomicInteger count = new AtomicInteger();
+    // 取元素锁
     private final ReentrantLock takeLock = new ReentrantLock();
+    // 非空条件
     private final Condition notEmpty = takeLock.newCondition();
+    // 放元素锁
     private final ReentrantLock putLock = new ReentrantLock();
+    // 非满条件
     private final Condition notFull = putLock.newCondition();
 
     private void signalNotEmpty() {
@@ -41,34 +81,54 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
-    int capacity;
-    int rowOffice;
-    int colOffice;
-    int rowSize;
-    int bitHigh;
-    int subareaSize;
-    int maxSize;
-
     public RingBlockingQueue(int subareaSize, int capacity) {
         this(subareaSize, capacity, 1);
     }
 
     public RingBlockingQueue(int subareaSize, int capacity, int concurrency) {
-        if (subareaSize > capacity || capacity < 0 || subareaSize < 0) {
-            throw new IllegalArgumentException("Illegal initial capacity:subareaSize>capacity||capacity<0||subareaSize<0");
+        if (capacity < MIN_CAPACITY) {
+            capacity = MIN_CAPACITY;
         }
-        maxSize = capacity;
-        subareaSize = subareaSizeFor(subareaSize);
-        capacity = tableSizeFor(capacity);
-        rowSize = tableSizeFor(capacity / subareaSize);
-        capacity = rowSize * subareaSize;
+        if (subareaSize < MIN_CAPACITY) {
+            subareaSize = MIN_CAPACITY;
+        }
+        if (subareaSize > capacity) {
+            throw new IllegalArgumentException(
+                    String.format("Illegal capacity: subareaSize(%d) > capacity(%d)", subareaSize, capacity)
+            );
+        }
 
-        data = new Object[rowSize][subareaSize];
-        this.capacity = capacity;
-        bitHigh = getIntHigh(subareaSize);
-        this.subareaSize = subareaSize;
-        rowOffice = rowSize - 1;
-        colOffice = subareaSize - 1;
+        QueueInitializer initializer = new QueueInitializer(subareaSize, capacity);
+        this.maxSize = initializer.maxSize;
+        this.subareaSize = initializer.subareaSize;
+        this.capacity = initializer.capacity;
+        this.rowSize = initializer.rowSize;
+        this.data = new Object[initializer.rowSize][initializer.subareaSize];
+        this.bitHigh = getIntHigh(this.subareaSize);
+        this.rowOffice = this.rowSize - 1;
+        this.colOffice = this.subareaSize - 1;
+    }
+
+    /**
+     * 队列初始化器
+     * 用于计算和存储队列的初始化参数
+     */
+    private static class QueueInitializer {
+        final int maxSize;
+        final int subareaSize;
+        final int capacity;
+        final int rowSize;
+
+        QueueInitializer(int subareaSize, int capacity) {
+            this.maxSize = capacity;
+            // 调整子区域大小为2的幂
+            this.subareaSize = subareaSizeFor(subareaSize);
+            int tempCapacity = tableSizeFor(capacity);
+            // 计算需要的行数
+            this.rowSize = tableSizeFor(tempCapacity / this.subareaSize);
+            // 计算实际容量
+            this.capacity = this.rowSize * this.subareaSize;
+        }
     }
 
     public RingBlockingQueue(Collection<? extends E> c) {
@@ -141,32 +201,89 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
     }
 
+    /**
+     * 向队列中添加元素
+     *
+     * @param o 要添加的元素
+     * @return 是否添加成功
+     */
     @Override
     public boolean offer(E o) {
-        if (o == null) {
-            throw new NullPointerException();
-        }
+        // 不允许null元素
+        Objects.requireNonNull(o, "Element cannot be null");
+
         putLock.lock();
         try {
-            if (count.get() >= capacity) {
-                return false;
-            }
-            int localWriteIndex = writeIndex + 1;
-            if (localWriteIndex > readIndex + maxSize) {
-                return false;
-            }
-            count.incrementAndGet();
-            writeIndex = localWriteIndex;
-            int row = (localWriteIndex >> bitHigh) & rowOffice;
-            int column = localWriteIndex & colOffice;
-            if (column == 0 && row == 0) {
-                refreshIndex();
-            }
-            data[row][column] = o;
-            return true;
+            return tryOffer(o);
         } finally {
             putLock.unlock();
         }
+    }
+
+    /**
+     * 尝试添加元素的内部方法
+     *
+     * @param o 要添加的元素
+     * @return 是否添加成功
+     */
+    private boolean tryOffer(E o) {
+        // 检查队列是否已满
+        if (count.get() >= capacity) {
+            return false;
+        }
+
+        // 计算新的写入位置
+        int localWriteIndex = writeIndex + 1;
+        if (localWriteIndex > readIndex + maxSize) {
+            return false;
+        }
+
+        // 计算存储位置
+        int row = calculateRow(localWriteIndex);
+        int column = calculateColumn(localWriteIndex);
+
+        writeIndex = localWriteIndex;
+        count.incrementAndGet();
+
+        // 检查是否需要刷新索引
+        if (needsRefresh(row, column)) {
+            refreshIndex();
+        }
+
+        // 存储元素
+        data[row][column] = o;
+        return true;
+    }
+
+    /**
+     * 计算行索引
+     *
+     * @param index 全局索引
+     * @return 行索引
+     */
+    private int calculateRow(int index) {
+        return (index >> bitHigh) & rowOffice;
+    }
+
+    /**
+     * 计算列索引
+     *
+     * @param index 全局索引
+     * @return 列索引
+     */
+    private int calculateColumn(int index) {
+        return index & colOffice;
+    }
+
+    /**
+     * 检查是否需要刷新索引
+     *
+     * @param row    行索引
+     * @param column 列索引
+     * @return 是否需要刷新
+     */
+    private boolean needsRefresh(int row, int column) {
+        return column == 0 && row == 0;
     }
 
     @Override
@@ -338,25 +455,58 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         return capacity - count.get();
     }
 
+    /**
+     * 从队列中移除指定元素
+     *
+     * @param o 要移除的元素
+     * @return 是否成功移除
+     */
     @Override
     public boolean remove(Object o) {
+        Objects.requireNonNull(o, "Element cannot be null");
+
         fullyLock();
         try {
-            for (int index = readIndex; readIndex >= index || index <= writeIndex; index++) {
-                if (o.equals(ergodic(index))) {
-                    // Remove the element and shift the rest
-                    for (int i = index; i < writeIndex; i++) {
-                        ergodic(i).equals(ergodic(i + 1));
-                    }
-                    writeIndex--;
-                    count.decrementAndGet();
-                    return true;
-                }
-            }
-            return false;
+            return tryRemove(o);
         } finally {
             fullyUnlock();
         }
+    }
+
+    /**
+     * 尝试移除元素的内部方法
+     *
+     * @param o 要移除的元素
+     * @return 是否成功移除
+     */
+    private boolean tryRemove(Object o) {
+        // 遍历查找要移除的元素
+        for (int index = readIndex + 1; index <= writeIndex; index++) {
+            if (o.equals(ergodic(index))) {
+                removeAt(index);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 移除指定位置的元素
+     *
+     * @param index 要移除的元素位置
+     */
+    private void removeAt(int index) {
+        // 移动后续元素
+        for (int i = index; i < writeIndex; i++) {
+            int nextRow = calculateRow(i + 1);
+            int nextColumn = calculateColumn(i + 1);
+            int currentRow = calculateRow(i);
+            int currentColumn = calculateColumn(i);
+            data[currentRow][currentColumn] = data[nextRow][nextColumn];
+        }
+        // 更新写入位置和元素计数
+        writeIndex--;
+        count.decrementAndGet();
     }
 
     @Override
