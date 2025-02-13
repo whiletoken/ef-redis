@@ -9,18 +9,18 @@ import com.wiqer.redis.util.Format;
 import com.wiqer.redis.util.PropertiesUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.RandomAccessFile;
-
 import java.lang.reflect.Method;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.List;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -38,295 +38,213 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 @Slf4j
 public class Aof {
 
-    /**
-     * AOF文件后缀
-     */
-    private static final String suffix = ".aof";
+    private static final String SUFFIX = ".aof";
+    private static final int SHIFT_BIT = 26;
+    private static final int ONE_PIECE = 1 << SHIFT_BIT;
 
-    /**
-     * 分片大小控制位
-     * 1. 经过大量测试，使用过3年以上机械磁盘的最大性能为26
-     * 2. 存盘偏移量，控制单个持久化文件大小
-     * 3. 1 << 26 约等于 64MB
-     */
-    private static final int shiftBit = 26;
-    /**
-     * 单个分片的大小：64MB
-     */
-    private static final int onePiece = 1 << shiftBit;
-
-    /**
-     * 当前AOF写入位置索引，用于追踪写入进度
-     */
-    private Long aofPutIndex = 0L;
-
-    /**
-     * AOF文件路径，从配置文件中读取
-     */
+    private final AtomicLong aofPutIndex = new AtomicLong(0L);
     private final String fileName = PropertiesUtil.getAofPath();
-
-    /**
-     * 运行时命令队列
-     * 初始容量：8888
-     * 最大容量：888888
-     * 用于临时存储待写入磁盘的命令
-     */
-    private final RingBlockingQueue<List<Resp>> runtimeRespQueue =
-            new RingBlockingQueue<>(8888, 888888);
-
-    /**
-     * 用于数据序列化的缓冲区
-     * 初始容量：8888
-     * 最大容量：2GB
-     */
-    private final ByteBuf bufferPolled =
-            new PooledByteBufAllocator().buffer(8888, 2147483647);
-
-    /**
-     * AOF持久化专用线程池
-     * 使用单线程确保命令顺序写入
-     * 线程名称前缀：Aof_Single_Thread
-     */
-    private final ScheduledThreadPoolExecutor persistenceExecutor =
-            new ScheduledThreadPoolExecutor(1,
-                    r -> new Thread(r, "Aof_Single_Thread"));
-
-    /**
-     * Redis核心实例引用，用于执行命令重放
-     */
-    @Getter
+    private final RingBlockingQueue<List<Resp>> runtimeRespQueue = new RingBlockingQueue<>(8888, 888888);
+    private final ByteBuf bufferPolled = PooledByteBufAllocator.DEFAULT.buffer(8888, 2147483647);
+    private final ScheduledThreadPoolExecutor persistenceExecutor = new ScheduledThreadPoolExecutor(1,
+            r -> new Thread(r, "Aof_Single_Thread"));
     private final RedisCore redisCore;
+    private final ReadWriteLock reentrantLock = new ReentrantReadWriteLock();
 
-    /**
-     * 读写锁
-     * 用于协调AOF文件的读写访问
-     * 保证文件操作的线程安全
-     */
-    final ReadWriteLock reentrantLock = new ReentrantReadWriteLock();
-
-    /**
-     * 构造函数
-     * 1. 初始化Redis核心实例
-     * 2. 确保AOF文件目录存在
-     * 3. 启动AOF服务
-     *
-     * @param redisCore Redis核心实例
-     */
     public Aof(RedisCore redisCore) {
         this.redisCore = redisCore;
-        // 确保AOF文件目录存在
-        File file = new File(this.fileName + suffix);
+        File file = new File(this.fileName + SUFFIX);
         if (!file.isDirectory()) {
             File parentFile = file.getParentFile();
             if (null != parentFile && !parentFile.exists()) {
-                parentFile.mkdirs();
+                if (parentFile.mkdirs()) {
+                    log.info("parentFile mkdir succeed");
+                }
             }
         }
         start();
     }
 
-    /**
-     * 将单个命令添加到AOF队列
-     *
-     * @param resp Redis命令响应对象
-     */
     public void put(Resp resp) {
         runtimeRespQueue.offer(List.of(resp));
     }
 
-    /**
-     * 将多个命令批量添加到AOF队列
-     *
-     * @param resp Redis命令响应对象列表
-     */
     public void put(List<Resp> resp) {
         runtimeRespQueue.offer(resp);
     }
 
     /**
-     * 启动AOF服务
-     * 1. 首先从磁盘加载已有的AOF文件
-     * 2. 启动定期持久化任务（每秒执行一次）
+     * 启动数据持久化和磁盘数据同步任务
+     * <p>
+     * 本方法负责启动两个任务：一是从磁盘加载所有段的数据到内存，二是定期将所有段的数据从内存同步到磁盘
+     * 使用persistenceExecutor执行器来管理这些任务，确保它们可以异步执行，提高系统的响应速度和处理能力
      */
     public void start() {
+        // 加载磁盘上所有段的数据到内存中，启动时执行一次
         persistenceExecutor.execute(this::pickupDiskDataAllSegment);
-        persistenceExecutor.scheduleAtFixedRate(this::downDiskAllSegment,
-                10, 1, TimeUnit.SECONDS);
+
+        // 定期将所有段的数据从内存同步到磁盘上，首次执行延迟10秒后进行，之后每隔1秒执行一次
+        persistenceExecutor.scheduleAtFixedRate(this::downDiskAllSegment, 10, 1, TimeUnit.SECONDS);
     }
 
-    /**
-     * 优雅关闭AOF服务
-     * 关闭持久化线程池
-     */
     public void close() {
         try {
-            persistenceExecutor.shutdown();
-        } catch (Exception exp) {
-            log.warn("Exception!", exp);
+            persistenceExecutor.shutdownNow();
+            if (!persistenceExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.warn("AOF executor did not terminate gracefully");
+            }
+        } catch (InterruptedException e) {
+            log.error("Interrupted while waiting for AOF executor to terminate", e);
         }
     }
 
     /**
-     * 将内存中的命令持久化到磁盘
-     * 采用分段存储策略，每个文件大小不超过 2^shiftBit
-     * 处理流程：
-     * 1. 获取写锁
-     * 2. 计算当前段ID
-     * 3. 创建或打开对应的文件
-     * 4. 使用内存映射写入数据
-     * 5. 根据需要扩展文件大小
+     * 将内存中的所有数据段持久化到磁盘
+     * 该方法主要用于将Redis响应队列中的数据异步写入到持久化文件中
      */
     public void downDiskAllSegment() {
+        // 尝试获取写锁，如果成功则执行数据持久化操作
         if (reentrantLock.writeLock().tryLock()) {
             try {
                 long segmentId = -1;
+                // 遍历所有数据段，直到当前数据段与待写入索引指示的数据段一致
                 Segment:
-                while (segmentId != (aofPutIndex >> shiftBit)) {
-                    // 计算当前段ID
-                    segmentId = (aofPutIndex >> shiftBit);
-                    // 打开对应的AOF文件
-                    RandomAccessFile randomAccessFile = new RandomAccessFile(fileName + "_" + segmentId + suffix, "rw");
-                    FileChannel channel = randomAccessFile.getChannel();
-                    long len = channel.size();
-                    // 计算段内偏移量
-                    int putIndex = Format.uintNBit(aofPutIndex, shiftBit);
-                    long baseOffset = aofPutIndex - putIndex;
+                while (segmentId != (aofPutIndex.get() >> SHIFT_BIT)) {
+                    segmentId = (aofPutIndex.get() >> SHIFT_BIT);
+                    // 打开或创建一个文件通道，用于读写指定的数据段文件
+                    try (RandomAccessFile randomAccessFile = new RandomAccessFile(fileName + "_" + segmentId + SUFFIX, "rw");
+                         FileChannel channel = randomAccessFile.getChannel()) {
+                        long len = channel.size();
+                        int putIndex = Format.uintNBit(aofPutIndex.get(), SHIFT_BIT);
+                        long baseOffset = aofPutIndex.get() - putIndex;
 
-                    // 如果文件剩余空间不足，扩展文件大小
-                    if (len - putIndex < 1L << (shiftBit - 2)) {
-                        len = segmentId + 1 << (shiftBit - 2);
-                    }
-
-                    // 创建内存映射
-                    MappedByteBuffer mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
-
-                    do {
-                        // 获取待写入的命令
-                        List<Resp> list = runtimeRespQueue.peek();
-                        if (list == null || list.isEmpty()) {
-                            clean(mappedByteBuffer);
-                            randomAccessFile.close();
-                            break Segment;
+                        // 调整数据段长度，确保有足够的空间写入数据
+                        if (len - putIndex < 1L << (SHIFT_BIT - 2)) {
+                            len = segmentId + 1 << (SHIFT_BIT - 2);
                         }
 
-                        // 序列化命令
-                        Resp.write(list, bufferPolled);
-                        int respLen = bufferPolled.readableBytes();
+                        MappedByteBuffer mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
 
-                        // 检查并扩展文件容量
-                        if ((mappedByteBuffer.capacity() <= respLen + putIndex)) {
-                            len += 1L << (shiftBit - 3);
-                            mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
-                            if (len > (1 << shiftBit)) {
-                                bufferPolled.release();
-                                aofPutIndex = baseOffset + 1 << shiftBit;
-                                break;
-                            }
-                        }
-
-                        // 写入数据
-                        while (respLen > 0) {
-                            respLen--;
-                            mappedByteBuffer.put(putIndex++, bufferPolled.readByte());
-                        }
-
-                        // 更新索引并清理
-                        aofPutIndex = baseOffset + putIndex;
-                        runtimeRespQueue.poll();
-                        bufferPolled.clear();
-
-                        // 检查是否需要扩展文件
-                        if (len - putIndex < (1L << (shiftBit - 3))) {
-                            len += 1L << (shiftBit - 3);
-                            if (len > (1 << shiftBit)) {
-                                bufferPolled.release();
+                        // 循环处理响应队列中的数据，直到队列为空或数据写满当前数据段
+                        do {
+                            List<Resp> list = runtimeRespQueue.peek();
+                            if (list == null || list.isEmpty()) {
                                 clean(mappedByteBuffer);
-                                aofPutIndex = baseOffset + 1 << shiftBit;
-                                break;
+                                break Segment;
                             }
-                            mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
-                        }
-                    } while (true);
+
+                            // 将响应数据序列化到缓冲区，并判断当前数据段是否有足够的空间写入
+                            Resp.write(list, bufferPolled);
+                            int respLen = bufferPolled.readableBytes();
+
+                            if ((mappedByteBuffer.capacity() <= respLen + putIndex)) {
+                                len += 1L << (SHIFT_BIT - 3);
+                                if (len > ONE_PIECE) {
+                                    bufferPolled.release();
+                                    aofPutIndex.set(baseOffset + ONE_PIECE);
+                                    break;
+                                }
+                                mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
+                            }
+
+                            // 将缓冲区中的数据写入到数据段文件中
+                            while (respLen > 0) {
+                                respLen--;
+                                mappedByteBuffer.put(putIndex++, bufferPolled.readByte());
+                            }
+
+                            aofPutIndex.set(baseOffset + putIndex);
+                            runtimeRespQueue.poll();
+                            bufferPolled.clear();
+
+                            // 根据需要扩展数据段长度，如果超出最大长度则进行清理并跳出循环
+                            if (len - putIndex < (1L << (SHIFT_BIT - 3))) {
+                                len += 1L << (SHIFT_BIT - 3);
+                                if (len > ONE_PIECE) {
+                                    bufferPolled.release();
+                                    clean(mappedByteBuffer);
+                                    aofPutIndex.set(baseOffset + ONE_PIECE);
+                                    break;
+                                }
+                                mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
+                            }
+                        } while (true);
+                    } catch (IOException e) {
+                        log.error("IO Exception in downDiskAllSegment", e);
+                    }
                 }
-            } catch (Exception e) {
-                log.error("aof Exception", e);
             } finally {
+                // 释放写锁，确保其他线程可以进行数据持久化操作
                 reentrantLock.writeLock().unlock();
             }
         }
     }
 
     /**
-     * 从磁盘加载AOF文件并重放命令
-     * 采用分段读取策略，保证内存使用效率
-     * 处理流程：
-     * 1. 获取写锁
-     * 2. 按段读取文件
-     * 3. 解析命令并重放
-     * 4. 更新索引位置
+     * 从所有段中获取磁盘数据
+     * 该方法通过读取和处理每个段的AOF文件来恢复数据
      */
     public void pickupDiskDataAllSegment() {
-        if (reentrantLock.writeLock().tryLock()) {
-            try {
-                long segmentId = -1;
-                Segment:
-                while (segmentId != (aofPutIndex >> shiftBit)) {
-                    segmentId = (aofPutIndex >> shiftBit);
-                    RandomAccessFile randomAccessFile = new RandomAccessFile(fileName + "_" + segmentId + suffix, "r");
-                    FileChannel channel = randomAccessFile.getChannel();
+        // 获取写锁以确保线程安全
+        reentrantLock.writeLock().lock();
+        try {
+            long segmentId = -1;
+            // 循环读取直到追上当前的AOF索引
+            Segment:
+            while (segmentId != (aofPutIndex.get() >> SHIFT_BIT)) {
+                segmentId = (aofPutIndex.get() >> SHIFT_BIT);
+                int putIndex = Format.uintNBit(aofPutIndex.get(), SHIFT_BIT);
+                long baseOffset = aofPutIndex.get() - putIndex;
+
+                // 打开并映射AOF文件到内存
+                try (RandomAccessFile randomAccessFile = new RandomAccessFile(fileName + "_" + segmentId + SUFFIX, "r");
+                     FileChannel channel = randomAccessFile.getChannel()) {
                     long len = channel.size();
-                    int putIndex = Format.uintNBit(aofPutIndex, shiftBit);
-                    long baseOffset = aofPutIndex - putIndex;
-
-                    // 创建内存映射和缓冲区
                     MappedByteBuffer mappedByteBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, len);
-                    ByteBuf bufferPolled = new PooledByteBufAllocator().buffer((int) len);
-                    bufferPolled.writeBytes(mappedByteBuffer);
 
-                    do {
-                        // 解析命令
-                        List<Resp> list;
-                        try {
-                            list = Resp.decode(bufferPolled);
-                        } catch (Exception e) {
-                            clean(mappedByteBuffer);
-                            randomAccessFile.close();
-                            bufferPolled.release();
-                            break Segment;
-                        }
+                    // 分配缓冲区以读取AOF文件内容
+                    ByteBuf bufferPolled = PooledByteBufAllocator.DEFAULT.buffer((int) len);
+                    try {
+                        bufferPolled.writeBytes(mappedByteBuffer);
 
-                        // 执行命令
-                        WriteCommand command = WriteCommandFactory.create(redisCore).from(list);
-                        command.handle();
+                        // 循环处理AOF文件中的命令
+                        do {
+                            try {
+                                List<Resp> list = Resp.decode(bufferPolled);
+                                WriteCommand command = WriteCommandFactory.create(redisCore).from(list);
+                                command.handle();
+                            } catch (Exception e) {
+                                break Segment;
+                            }
 
-                        // 更新索引
-                        putIndex = bufferPolled.readerIndex();
-                        aofPutIndex = putIndex + baseOffset;
+                            // 更新读取索引
+                            putIndex = bufferPolled.readerIndex();
+                            aofPutIndex.set(putIndex + baseOffset);
 
-                        // 检查是否需要切换到下一个段
-                        if (putIndex > onePiece) {
-                            bufferPolled.release();
-                            clean(mappedByteBuffer);
-                            aofPutIndex = baseOffset + onePiece;
-                            break;
-                        }
-                    } while (true);
+                            // 如果读取索引超过一段的大小，则更新aofPutIndex并中断循环
+                            if (putIndex > ONE_PIECE) {
+                                aofPutIndex.set(baseOffset + ONE_PIECE);
+                                break;
+                            }
+                        } while (true);
+                    } finally {
+                        // 释放缓冲区并清理内存映射文件
+                        bufferPolled.release();
+                        clean(mappedByteBuffer);
+                    }
+                } catch (IOException e) {
+                    log.error("Failed to process AOF file for segment {}", segmentId, e);
+                    break;
                 }
-            } catch (Exception e) {
-                log.error(e.getMessage());
-            } finally {
-                reentrantLock.writeLock().unlock();
             }
+        } catch (Exception e) {
+            log.error("Failed to pickup disk data from all segments", e);
+        } finally {
+            // 释放写锁
+            reentrantLock.writeLock().unlock();
         }
     }
 
-    /**
-     * 清理MappedByteBuffer资源
-     * 通过反射调用cleaner方法强制释放内存映射
-     * 这是必要的，因为MappedByteBuffer不会被GC自动回收
-     *
-     * @param buffer 需要清理的MappedByteBuffer
-     */
     public static void clean(final MappedByteBuffer buffer) {
         if (buffer == null) {
             return;
@@ -341,13 +259,5 @@ public class Aof {
         } catch (Exception e) {
             log.error("Unexpected error during cleanup: ", e);
         }
-    }
-
-    /**
-     * 测试方法
-     * 打印单个分片的大小（64MB）
-     */
-    public static void main(String[] args) {
-        System.out.println(1 << shiftBit);
     }
 }
