@@ -1,26 +1,25 @@
-package com.wiqer.redis.channel.select;
+package com.wiqer.redis.netty.channel.kqueue;
 
-import com.wiqer.redis.channel.LocalChannelOption;
+import com.wiqer.redis.netty.channel.LocalChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.util.NettyRuntime;
-import io.netty.util.internal.SystemPropertyUtil;
+import io.netty.channel.kqueue.KQueueEventLoopGroup;
+import io.netty.channel.kqueue.KQueueServerSocketChannel;
 
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class NioSelectChannelOption implements LocalChannelOption {
-    private final NioEventLoopGroup boss;
-    private final NioEventLoopGroup selectors;
+public class KqueueChannelOption implements LocalChannelOption {
 
-    public NioSelectChannelOption(NioEventLoopGroup boss, NioEventLoopGroup selectors) {
+    private final KQueueEventLoopGroup boss;
+    private final KQueueEventLoopGroup selectors;
+
+    public KqueueChannelOption(KQueueEventLoopGroup boss, KQueueEventLoopGroup selectors) {
         this.boss = boss;
         this.selectors = selectors;
     }
 
-    public NioSelectChannelOption() {
-        this.boss = new NioEventLoopGroup(4, new ThreadFactory() {
+    public KqueueChannelOption() {
+        this.boss = new KQueueEventLoopGroup(4, new ThreadFactory() {
             private final AtomicInteger index = new AtomicInteger(0);
 
             @Override
@@ -29,7 +28,7 @@ public class NioSelectChannelOption implements LocalChannelOption {
             }
         });
 
-        this.selectors = new NioEventLoopGroup(Math.max(1, SystemPropertyUtil.getInt("io.netty.eventLoopThreads", NettyRuntime.availableProcessors())), new ThreadFactory() {
+        this.selectors = new KQueueEventLoopGroup(8, new ThreadFactory() {
             private final AtomicInteger index = new AtomicInteger(0);
 
             @Override
@@ -51,6 +50,6 @@ public class NioSelectChannelOption implements LocalChannelOption {
 
     @Override
     public Class getChannelClass() {
-        return NioServerSocketChannel.class;
+        return KQueueServerSocketChannel.class;
     }
 }

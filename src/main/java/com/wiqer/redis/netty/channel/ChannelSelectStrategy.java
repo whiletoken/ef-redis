@@ -1,4 +1,4 @@
-package com.wiqer.redis.channel;
+package com.wiqer.redis.netty.channel;
 
 /**
  * @author Administrator

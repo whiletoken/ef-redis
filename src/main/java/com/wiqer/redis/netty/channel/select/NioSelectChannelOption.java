@@ -1,25 +1,26 @@
-package com.wiqer.redis.channel.epoll;
+package com.wiqer.redis.netty.channel.select;
 
-import com.wiqer.redis.channel.LocalChannelOption;
+import com.wiqer.redis.netty.channel.LocalChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.epoll.EpollEventLoopGroup;
-import io.netty.channel.epoll.EpollServerSocketChannel;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.util.NettyRuntime;
+import io.netty.util.internal.SystemPropertyUtil;
 
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class EpollChannelOption implements LocalChannelOption {
+public class NioSelectChannelOption implements LocalChannelOption {
+    private final NioEventLoopGroup boss;
+    private final NioEventLoopGroup selectors;
 
-    private final EpollEventLoopGroup boss;
-    private final EpollEventLoopGroup selectors;
-
-    public EpollChannelOption(EpollEventLoopGroup boss, EpollEventLoopGroup selectors) {
+    public NioSelectChannelOption(NioEventLoopGroup boss, NioEventLoopGroup selectors) {
         this.boss = boss;
         this.selectors = selectors;
     }
 
-    public EpollChannelOption() {
-        this.boss = new EpollEventLoopGroup(4, new ThreadFactory() {
+    public NioSelectChannelOption() {
+        this.boss = new NioEventLoopGroup(4, new ThreadFactory() {
             private final AtomicInteger index = new AtomicInteger(0);
 
             @Override
@@ -28,7 +29,7 @@ public class EpollChannelOption implements LocalChannelOption {
             }
         });
 
-        this.selectors = new EpollEventLoopGroup(8, new ThreadFactory() {
+        this.selectors = new NioEventLoopGroup(Math.max(1, SystemPropertyUtil.getInt("io.netty.eventLoopThreads", NettyRuntime.availableProcessors())), new ThreadFactory() {
             private final AtomicInteger index = new AtomicInteger(0);
 
             @Override
@@ -50,6 +51,6 @@ public class EpollChannelOption implements LocalChannelOption {
 
     @Override
     public Class getChannelClass() {
-        return EpollServerSocketChannel.class;
+        return NioServerSocketChannel.class;
     }
 }

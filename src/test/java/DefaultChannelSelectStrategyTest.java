@@ -1,8 +1,8 @@
-import com.wiqer.redis.channel.DefaultChannelSelectStrategy;
-import com.wiqer.redis.channel.LocalChannelOption;
-import com.wiqer.redis.channel.epoll.EpollChannelOption;
-import com.wiqer.redis.channel.kqueue.KqueueChannelOption;
-import com.wiqer.redis.channel.select.NioSelectChannelOption;
+import com.wiqer.redis.netty.channel.DefaultChannelSelectStrategy;
+import com.wiqer.redis.netty.channel.LocalChannelOption;
+import com.wiqer.redis.netty.channel.epoll.EpollChannelOption;
+import com.wiqer.redis.netty.channel.kqueue.KqueueChannelOption;
+import com.wiqer.redis.netty.channel.select.NioSelectChannelOption;
 import org.junit.Test;
 
 public class DefaultChannelSelectStrategyTest {

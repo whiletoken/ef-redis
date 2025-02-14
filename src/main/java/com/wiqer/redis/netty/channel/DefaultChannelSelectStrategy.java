@@ -1,8 +1,8 @@
-package com.wiqer.redis.channel;
+package com.wiqer.redis.netty.channel;
 
-import com.wiqer.redis.channel.epoll.EpollChannelOption;
-import com.wiqer.redis.channel.kqueue.KqueueChannelOption;
-import com.wiqer.redis.channel.select.NioSelectChannelOption;
+import com.wiqer.redis.netty.channel.epoll.EpollChannelOption;
+import com.wiqer.redis.netty.channel.kqueue.KqueueChannelOption;
+import com.wiqer.redis.netty.channel.select.NioSelectChannelOption;
 import io.netty.channel.epoll.Epoll;
 import io.netty.channel.kqueue.KQueue;
 

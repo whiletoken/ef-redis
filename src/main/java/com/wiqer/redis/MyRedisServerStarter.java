@@ -1,6 +1,6 @@
 package com.wiqer.redis;
 
-import com.wiqer.redis.channel.single.NettySingleSelectChannelOption;
+import com.wiqer.redis.netty.channel.single.NettySingleSelectChannelOption;
 import lombok.extern.slf4j.Slf4j;
 
 /**

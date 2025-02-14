@@ -1,25 +1,25 @@
-package com.wiqer.redis.channel.kqueue;
+package com.wiqer.redis.netty.channel.epoll;
 
-import com.wiqer.redis.channel.LocalChannelOption;
+import com.wiqer.redis.netty.channel.LocalChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.kqueue.KQueueEventLoopGroup;
-import io.netty.channel.kqueue.KQueueServerSocketChannel;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollServerSocketChannel;
 
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class KqueueChannelOption implements LocalChannelOption {
+public class EpollChannelOption implements LocalChannelOption {
 
-    private final KQueueEventLoopGroup boss;
-    private final KQueueEventLoopGroup selectors;
+    private final EpollEventLoopGroup boss;
+    private final EpollEventLoopGroup selectors;
 
-    public KqueueChannelOption(KQueueEventLoopGroup boss, KQueueEventLoopGroup selectors) {
+    public EpollChannelOption(EpollEventLoopGroup boss, EpollEventLoopGroup selectors) {
         this.boss = boss;
         this.selectors = selectors;
     }
 
-    public KqueueChannelOption() {
-        this.boss = new KQueueEventLoopGroup(4, new ThreadFactory() {
+    public EpollChannelOption() {
+        this.boss = new EpollEventLoopGroup(4, new ThreadFactory() {
             private final AtomicInteger index = new AtomicInteger(0);
 
             @Override
@@ -28,7 +28,7 @@ public class KqueueChannelOption implements LocalChannelOption {
             }
         });
 
-        this.selectors = new KQueueEventLoopGroup(8, new ThreadFactory() {
+        this.selectors = new EpollEventLoopGroup(8, new ThreadFactory() {
             private final AtomicInteger index = new AtomicInteger(0);
 
             @Override
@@ -50,6 +50,6 @@ public class KqueueChannelOption implements LocalChannelOption {
 
     @Override
     public Class getChannelClass() {
-        return KQueueServerSocketChannel.class;
+        return EpollServerSocketChannel.class;
     }
 }

@@ -1,6 +1,6 @@
-package com.wiqer.redis.channel.single;
+package com.wiqer.redis.netty.channel.single;
 
-import com.wiqer.redis.channel.LocalChannelOption;
+import com.wiqer.redis.netty.channel.LocalChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
