@@ -1,5 +1,7 @@
 package com.wiqer.redis.aof.queue;
 
+import org.jetbrains.annotations.NotNull;
+
 import java.io.Serial;
 import java.io.Serializable;
 import java.util.*;
@@ -37,19 +39,15 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     private final int rowOffice;
     // 列索引掩码（用于位运算）
     private final int colOffice;
-    // 数组行数
-    private final int rowSize;
     // 位运算使用的位数
     private final int bitHigh;
-    // 子区域大小
-    private final int subareaSize;
     // 最大可用大小
     private final int maxSize;
 
     // 读取位置索引（volatile保证可见性）
-    volatile int readIndex = -1;
+    final AtomicInteger readIndex = new AtomicInteger(-1);
     // 写入位置索引（volatile保证可见性）
-    volatile int writeIndex = -1;
+    final AtomicInteger writeIndex = new AtomicInteger(-1);
     // 当前元素数量
     private final AtomicInteger count = new AtomicInteger();
     // 取元素锁
@@ -85,6 +83,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         this(subareaSize, capacity, 1);
     }
 
+    // 8888 88888
     public RingBlockingQueue(int subareaSize, int capacity, int concurrency) {
         if (capacity < MIN_CAPACITY) {
             capacity = MIN_CAPACITY;
@@ -100,13 +99,11 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
 
         QueueInitializer initializer = new QueueInitializer(subareaSize, capacity);
         this.maxSize = initializer.maxSize;
-        this.subareaSize = initializer.subareaSize;
         this.capacity = initializer.capacity;
-        this.rowSize = initializer.rowSize;
-        this.data = new Object[initializer.rowSize][initializer.subareaSize];
-        this.bitHigh = getIntHigh(this.subareaSize);
-        this.rowOffice = this.rowSize - 1;
-        this.colOffice = this.subareaSize - 1;
+        this.data = new Object[initializer.rowSize][initializer.colSize];
+        this.bitHigh = getIntHigh(initializer.colSize);
+        this.rowOffice = initializer.rowSize - 1;
+        this.colOffice = initializer.colSize - 1;
     }
 
     /**
@@ -115,19 +112,18 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
      */
     private static class QueueInitializer {
         final int maxSize;
-        final int subareaSize;
         final int capacity;
+        final int colSize;
         final int rowSize;
 
         QueueInitializer(int subareaSize, int capacity) {
             this.maxSize = capacity;
             // 调整子区域大小为2的幂
-            this.subareaSize = subareaSizeFor(subareaSize);
-            int tempCapacity = tableSizeFor(capacity);
+            this.colSize = subareaSizeFor(subareaSize);
             // 计算需要的行数
-            this.rowSize = tableSizeFor(tempCapacity / this.subareaSize);
+            this.rowSize = tableSizeFor(tableSizeFor(capacity) / this.colSize);
             // 计算实际容量
-            this.capacity = this.rowSize * this.subareaSize;
+            this.capacity = this.rowSize * this.colSize;
         }
     }
 
@@ -186,18 +182,15 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     void refreshIndex() {
-        if (readIndex > capacity) {
-            putLock.lock();
-            try {
-                synchronized (this) {
-                    if (readIndex > capacity) {
-                        writeIndex -= capacity;
-                        readIndex -= capacity;
-                    }
-                }
-            } finally {
-                putLock.unlock();
+        putLock.lock();
+        try {
+            if (readIndex.get() > capacity) {
+                int offset = (readIndex.get() / capacity) * capacity;
+                writeIndex.addAndGet(-offset);
+                readIndex.addAndGet(-offset);
             }
+        } finally {
+            putLock.unlock();
         }
     }
 
@@ -233,8 +226,8 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
 
         // 计算新的写入位置
-        int localWriteIndex = writeIndex + 1;
-        if (localWriteIndex > readIndex + maxSize) {
+        int localWriteIndex = writeIndex.get() + 1;
+        if (localWriteIndex > readIndex.get() + maxSize) {
             return false;
         }
 
@@ -242,7 +235,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         int row = calculateRow(localWriteIndex);
         int column = calculateColumn(localWriteIndex);
 
-        writeIndex = localWriteIndex;
+        writeIndex.set(localWriteIndex);
         count.incrementAndGet();
 
         // 检查是否需要刷新索引
@@ -290,18 +283,21 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     public E poll() {
         takeLock.lock();
         try {
-            if (writeIndex <= readIndex) {
+            if (writeIndex.get() <= readIndex.get()) {
                 return null;
             }
-            int localReadIndex = readIndex + 1;
-            readIndex = localReadIndex;
-            int row = (localReadIndex >> bitHigh) & rowOffice;
-            int column = localReadIndex & colOffice;
-            if (column == 0 && row == 0) {
+            int localReadIndex = readIndex.get() + 1;
+            readIndex.set(localReadIndex);
+            int row = calculateRow(localReadIndex);
+            int column = calculateColumn(localReadIndex);
+            if (needsRefresh(row, column)) {
                 refreshIndex();
             }
             E result = (E) data[row][column];
-            count.decrementAndGet();
+            if (result != null) {
+                data[row][column] = null;
+                count.decrementAndGet();
+            }
             return result;
         } finally {
             takeLock.unlock();
@@ -309,7 +305,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     E ergodic(Integer index) {
-        if (index > writeIndex || index < readIndex) {
+        if (index > writeIndex.get() || index < readIndex.get()) {
             return null;
         }
         int row = (index >> bitHigh) & rowOffice;
@@ -324,10 +320,10 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     public E peek() {
         takeLock.lock();
         try {
-            if (writeIndex <= readIndex) {
+            if (writeIndex.get() <= readIndex.get()) {
                 return null;
             }
-            int localReadIndex = readIndex;
+            int localReadIndex = readIndex.get();
             int row = (localReadIndex >> bitHigh) & rowOffice;
             int column = localReadIndex & colOffice;
             if (column == 0 && row == 0) {
@@ -397,7 +393,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     @Override
-    public E take() throws InterruptedException {
+    public @NotNull E take() throws InterruptedException {
         E x;
         int c = -1;
         final AtomicInteger count = this.count;
@@ -423,8 +419,8 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
 
     @Override
     public E poll(long timeout, TimeUnit unit) throws InterruptedException {
-        E x = null;
-        int c = -1;
+        E x;
+        int c;
         long nanos = unit.toNanos(timeout);
         final AtomicInteger count = this.count;
         final ReentrantLock takeLock = this.takeLock;
@@ -464,7 +460,6 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     @Override
     public boolean remove(Object o) {
         Objects.requireNonNull(o, "Element cannot be null");
-
         fullyLock();
         try {
             return tryRemove(o);
@@ -480,14 +475,48 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
      * @return 是否成功移除
      */
     private boolean tryRemove(Object o) {
-        // 遍历查找要移除的元素
-        for (int index = readIndex + 1; index <= writeIndex; index++) {
+        int size = count.get();
+        if (size == 0) {
+            return false;
+        }
+        for (int i = 0; i < size; i++) {
+            int index = readIndex.get() + 1 + i;
             if (o.equals(ergodic(index))) {
-                removeAt(index);
+                int currentRow = calculateRow(index);
+                int currentCol = calculateColumn(index);
+                int nextRow = calculateRow(index + 1);
+                int nextCol = calculateColumn(index + 1);
+
+                int remainingElements = writeIndex.get() - index;
+                if (remainingElements > 0) {
+                    if (currentRow == nextRow) {
+                        System.arraycopy(data[currentRow], nextCol, data[currentRow], currentCol, remainingElements);
+                    } else {
+                        moveElementsAcrossRows(index, remainingElements);
+                    }
+                }
+                int lastRow = calculateRow(writeIndex.get());
+                int lastCol = calculateColumn(writeIndex.get());
+                data[lastRow][lastCol] = null;
+
+                writeIndex.getAndDecrement();
+                count.decrementAndGet();
                 return true;
             }
         }
         return false;
+    }
+
+    private void moveElementsAcrossRows(int startIndex, int count) {
+        for (int i = 0; i < count; i++) {
+            int sourceIndex = startIndex + i + 1;
+            int targetIndex = startIndex + i;
+            int sourceRow = calculateRow(sourceIndex);
+            int sourceCol = calculateColumn(sourceIndex);
+            int targetRow = calculateRow(targetIndex);
+            int targetCol = calculateColumn(targetIndex);
+            data[targetRow][targetCol] = data[sourceRow][sourceCol];
+        }
     }
 
     /**
@@ -497,7 +526,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
      */
     private void removeAt(int index) {
         // 移动后续元素
-        for (int i = index; i < writeIndex; i++) {
+        for (int i = index; i < writeIndex.get(); i++) {
             int nextRow = calculateRow(i + 1);
             int nextColumn = calculateColumn(i + 1);
             int currentRow = calculateRow(i);
@@ -505,7 +534,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
             data[currentRow][currentColumn] = data[nextRow][nextColumn];
         }
         // 更新写入位置和元素计数
-        writeIndex--;
+        writeIndex.getAndDecrement();
         count.decrementAndGet();
     }
 
@@ -554,7 +583,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         }
         fullyLock();
         try {
-            for (int index = readIndex; readIndex >= index || index <= writeIndex; index++) {
+            for (int index = readIndex.get(); readIndex.get() >= index || index <= writeIndex.get(); index++) {
                 if (o.equals(ergodic(index))) {
                     return true;
                 }
@@ -566,27 +595,44 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     @Override
-    public Iterator<E> iterator() {
-        return new Iterator<E>() {
-            private int currentIndex = readIndex;
-            private final int expectedModCount = count.get();
+    public @NotNull Iterator<E> iterator() {
+        return new Itr();
+    }
 
-            @Override
-            public boolean hasNext() {
-                return currentIndex < writeIndex;
-            }
+    private class Itr implements Iterator<E> {
+        private int cursor = readIndex.get() + 1;
+        private int lastRet = -1;
+        private final int fence = writeIndex.get() + 1;
+        private final int expectedCount = count.get();
 
-            @Override
-            public E next() {
-                if (currentIndex >= writeIndex) {
-                    throw new NoSuchElementException();
-                }
-                if (expectedModCount != count.get()) {
-                    throw new ConcurrentModificationException();
-                }
-                return (E) ergodic(currentIndex++);
-            }
-        };
+        @Override
+        public boolean hasNext() {
+            return cursor < fence;
+        }
+
+        @Override
+        public E next() {
+            if (expectedCount != count.get())
+                throw new ConcurrentModificationException();
+            if (cursor >= fence)
+                throw new NoSuchElementException();
+
+            lastRet = cursor;
+            E result = ergodic(cursor++);
+            return result;
+        }
+
+        @Override
+        public void remove() {
+            if (lastRet < 0)
+                throw new IllegalStateException();
+            if (expectedCount != count.get())
+                throw new ConcurrentModificationException();
+
+            RingBlockingQueue.this.removeAt(lastRet);
+            cursor = lastRet;
+            lastRet = -1;
+        }
     }
 
     void fullyLock() {
@@ -600,13 +646,13 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     @Override
-    public Object[] toArray() {
+    public Object @NotNull [] toArray() {
         fullyLock();
         try {
             int size = count.get();
             Object[] a = new Object[size];
             int k = 0;
-            for (int index = readIndex; readIndex >= index || index <= writeIndex; index++) {
+            for (int index = readIndex.get(); readIndex.get() >= index || index <= writeIndex.get(); index++) {
                 a[k++] = ergodic(index);
             }
             return a;
@@ -616,7 +662,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     }
 
     @Override
-    public <T> T[] toArray(T[] a) {
+    public <T> T @NotNull [] toArray(T[] a) {
         fullyLock();
         try {
             int size = count.get();
@@ -625,7 +671,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
             }
 
             int k = 0;
-            for (int index = readIndex; readIndex >= index || index <= writeIndex; index++) {
+            for (int index = readIndex.get(); readIndex.get() >= index || index <= writeIndex.get(); index++) {
                 a[k++] = (T) ergodic(index);
             }
             if (a.length > k) {
