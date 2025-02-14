@@ -220,31 +220,28 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
      * @return 是否添加成功
      */
     private boolean tryOffer(E o) {
-        // 检查队列是否已满
+        // 先进行快速检查，避免不必要的计算
         if (count.get() >= capacity) {
             return false;
         }
 
-        // 计算新的写入位置
-        int localWriteIndex = writeIndex.get() + 1;
+        int localWriteIndex = writeIndex.incrementAndGet();
         if (localWriteIndex > readIndex.get() + maxSize) {
+            writeIndex.decrementAndGet(); // 回滚写入索引
             return false;
         }
 
-        // 计算存储位置
         int row = calculateRow(localWriteIndex);
         int column = calculateColumn(localWriteIndex);
 
-        writeIndex.set(localWriteIndex);
+        data[row][column] = o;
         count.incrementAndGet();
 
-        // 检查是否需要刷新索引
+        // 移动到最后执行索引刷新
         if (needsRefresh(row, column)) {
             refreshIndex();
         }
 
-        // 存储元素
-        data[row][column] = o;
         return true;
     }
 
@@ -283,21 +280,23 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
     public E poll() {
         takeLock.lock();
         try {
-            if (writeIndex.get() <= readIndex.get()) {
+            if (count.get() == 0) {
                 return null;
             }
-            int localReadIndex = readIndex.get() + 1;
-            readIndex.set(localReadIndex);
+
+            int localReadIndex = readIndex.incrementAndGet();
             int row = calculateRow(localReadIndex);
             int column = calculateColumn(localReadIndex);
+
+            @SuppressWarnings("unchecked")
+            E result = (E) data[row][column];
+            data[row][column] = null; // 清除引用
+            count.decrementAndGet();
+
             if (needsRefresh(row, column)) {
                 refreshIndex();
             }
-            E result = (E) data[row][column];
-            if (result != null) {
-                data[row][column] = null;
-                count.decrementAndGet();
-            }
+
             return result;
         } finally {
             takeLock.unlock();
@@ -340,7 +339,7 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         if (o == null) {
             throw new NullPointerException();
         }
-        int c = -1;
+        int c;
         final ReentrantLock putLock = this.putLock;
         final AtomicInteger count = this.count;
         putLock.lockInterruptibly();
@@ -581,10 +580,15 @@ public class RingBlockingQueue<E> extends AbstractQueue<E> implements BlockingQu
         if (o == null) {
             return false;
         }
+
         fullyLock();
         try {
-            for (int index = readIndex.get(); readIndex.get() >= index || index <= writeIndex.get(); index++) {
-                if (o.equals(ergodic(index))) {
+            int start = readIndex.get() + 1;
+            int end = writeIndex.get();
+
+            for (int i = start; i <= end; i++) {
+                E element = ergodic(i);
+                if (o.equals(element)) {
                     return true;
                 }
             }
