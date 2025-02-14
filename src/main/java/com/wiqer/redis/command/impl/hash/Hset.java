@@ -1,10 +1,9 @@
 package com.wiqer.redis.command.impl.hash;
 
+import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.command.WriteCommandType;
 import com.wiqer.redis.command.WriteCommand;
-import com.wiqer.redis.core.RedisHashCore;
 import com.wiqer.redis.datatype.BytesWrapper;
 import com.wiqer.redis.datatype.RedisHash;
 import com.wiqer.redis.resp.BulkString;
@@ -13,7 +12,7 @@ import com.wiqer.redis.resp.RespInt;
 
 import java.util.List;
 
-public class Hset extends AbstractCore<RedisHashCore, RedisHash> implements WriteCommand {
+public class Hset extends AbstractCore<RedisHash> implements WriteCommand {
 
     private BytesWrapper key;
     private BytesWrapper field;
@@ -21,12 +20,12 @@ public class Hset extends AbstractCore<RedisHashCore, RedisHash> implements Writ
 
     @Override
     public String type() {
-        return WriteCommandType.hset.name();
+        return CommonCommandType.hset.name();
     }
 
     @Override
     public void init(RedisCore redisCore, List<Resp> array) {
-        setRedisCore((RedisHashCore) redisCore);
+        setRedisCore(redisCore);
         key = ((BulkString) array.get(1)).getContent();
         field = ((BulkString) array.get(2)).getContent();
         value = ((BulkString) array.get(3)).getContent();

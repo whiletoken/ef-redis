@@ -4,7 +4,6 @@ import com.wiqer.redis.command.Command;
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
 import com.wiqer.redis.command.CommonCommandType;
-import com.wiqer.redis.core.RedisHashCore;
 import com.wiqer.redis.datatype.BytesWrapper;
 import com.wiqer.redis.datatype.RedisHash;
 import com.wiqer.redis.resp.BulkString;
@@ -15,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-public class Hscan extends AbstractCore<RedisHashCore, RedisHash> implements Command {
+public class Hscan extends AbstractCore<RedisHash> implements Command {
 
     private BytesWrapper key;
 
@@ -26,7 +25,7 @@ public class Hscan extends AbstractCore<RedisHashCore, RedisHash> implements Com
 
     @Override
     public void init(RedisCore redisCore, List<Resp> array) {
-        setRedisCore((RedisHashCore) redisCore);
+        setRedisCore(redisCore);
         key = ((BulkString) array.get(1)).getContent();
     }
 

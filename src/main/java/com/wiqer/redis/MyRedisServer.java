@@ -101,6 +101,7 @@ public class MyRedisServer implements RedisServer, AutoCloseable {
             serverChannelFuture = serverBootstrap.bind().sync();
             isRunning = true;
             log.info(SERVER_START_SUCCESS, serverChannelFuture.channel().localAddress());
+            serverChannelFuture.channel().closeFuture().sync().channel();
         } catch (Exception e) {
             log.error(SERVER_START_FAILED, e);
             close();
@@ -115,7 +116,7 @@ public class MyRedisServer implements RedisServer, AutoCloseable {
                 ChannelPipeline pipeline = socketChannel.pipeline();
                 pipeline.addLast(
                         new ResponseEncoder(),
-                        new CommandDecoder(aof)
+                        new CommandDecoder(redisCore, aof)
                 );
                 pipeline.addLast(redisSingleEventExecutor, new CommandHandler());
             }

@@ -1,10 +1,9 @@
 package com.wiqer.redis.command.impl.hash;
 
+import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.command.WriteCommandType;
 import com.wiqer.redis.command.WriteCommand;
-import com.wiqer.redis.core.RedisHashCore;
 import com.wiqer.redis.datatype.BytesWrapper;
 import com.wiqer.redis.datatype.RedisHash;
 import com.wiqer.redis.resp.BulkString;
@@ -14,14 +13,14 @@ import com.wiqer.redis.resp.RespInt;
 import java.util.List;
 import java.util.stream.Collectors;
 
-public class Hdel extends AbstractCore<RedisHashCore, RedisHash> implements WriteCommand {
+public class Hdel extends AbstractCore<RedisHash> implements WriteCommand {
 
     private BytesWrapper key;
     private List<BytesWrapper> fields;
 
     @Override
     public String type() {
-        return WriteCommandType.hdel.name();
+        return CommonCommandType.hdel.name();
     }
 
     @Override
@@ -30,7 +29,7 @@ public class Hdel extends AbstractCore<RedisHashCore, RedisHash> implements Writ
             throw new IllegalArgumentException("HDEL命令至少需要一个key和一个field");
         }
 
-        setRedisCore((RedisHashCore) redisCore);
+        setRedisCore(redisCore);
         key = ((BulkString) array.get(1)).getContent();
 
         // 使用更高效的方式收集fields

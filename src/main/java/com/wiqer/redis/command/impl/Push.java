@@ -1,7 +1,6 @@
 package com.wiqer.redis.command.impl;
 
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.core.RedisListCore;
 import com.wiqer.redis.command.WriteCommand;
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.datatype.BytesWrapper;
@@ -15,7 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiConsumer;
 
-public abstract class Push extends AbstractCore<RedisListCore, RedisList> implements WriteCommand {
+public abstract class Push extends AbstractCore<RedisList> implements WriteCommand {
 
     BiConsumer<RedisList, List<BytesWrapper>> biConsumer;
     private BytesWrapper key;
@@ -27,7 +26,7 @@ public abstract class Push extends AbstractCore<RedisListCore, RedisList> implem
 
     @Override
     public void init(RedisCore redisCore, List<Resp> array) {
-        setRedisCore((RedisListCore) redisCore);
+        setRedisCore(redisCore);
         key = ((BulkString) array.get(1)).getContent();
         value = new ArrayList<>();
         for (int i = 2; i < array.size(); i++) {

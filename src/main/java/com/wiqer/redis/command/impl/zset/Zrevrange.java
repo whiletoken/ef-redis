@@ -2,7 +2,6 @@ package com.wiqer.redis.command.impl.zset;
 
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.core.RedisZsetCore;
 import com.wiqer.redis.command.Command;
 import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.datatype.BytesWrapper;
@@ -14,7 +13,7 @@ import io.netty.channel.ChannelHandlerContext;
 import java.util.List;
 import java.util.stream.Stream;
 
-public class Zrevrange extends AbstractCore<RedisZsetCore, RedisZset> implements Command {
+public class Zrevrange extends AbstractCore<RedisZset> implements Command {
 
     private BytesWrapper key;
     private int start;
@@ -30,7 +29,7 @@ public class Zrevrange extends AbstractCore<RedisZsetCore, RedisZset> implements
         this.key = ((BulkString) array.get(1)).getContent();
         this.start = Integer.parseInt(((BulkString) array.get(2)).getContent().toUtf8String());
         this.end = Integer.parseInt(((BulkString) array.get(3)).getContent().toUtf8String());
-        setRedisCore((RedisZsetCore) redisCore);
+        setRedisCore(redisCore);
     }
 
     @Override

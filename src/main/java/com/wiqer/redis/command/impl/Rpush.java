@@ -1,6 +1,6 @@
 package com.wiqer.redis.command.impl;
 
-import com.wiqer.redis.command.WriteCommandType;
+import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.datatype.RedisList;
 
 public class Rpush extends Push {
@@ -11,6 +11,6 @@ public class Rpush extends Push {
 
     @Override
     public String type() {
-        return WriteCommandType.rpush.name();
+        return CommonCommandType.rpush.name();
     }
 }

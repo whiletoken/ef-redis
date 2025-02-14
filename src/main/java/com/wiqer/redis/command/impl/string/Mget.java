@@ -2,7 +2,6 @@ package com.wiqer.redis.command.impl.string;
 
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.core.RedisStringCore;
 import com.wiqer.redis.command.Command;
 import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.datatype.BytesWrapper;
@@ -16,7 +15,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-public class Mget extends AbstractCore<RedisStringCore, RedisString> implements Command {
+public class Mget extends AbstractCore<RedisString> implements Command {
 
     private List<BytesWrapper> keys;
 
@@ -28,7 +27,7 @@ public class Mget extends AbstractCore<RedisStringCore, RedisString> implements 
     @Override
     public void init(RedisCore redisCore, List<Resp> array) {
         keys = Stream.of(array).skip(1).map(resp -> ((BulkString) resp).getContent()).collect(Collectors.toList());
-        setRedisCore((RedisStringCore) redisCore);
+        setRedisCore(redisCore);
     }
 
     @Override

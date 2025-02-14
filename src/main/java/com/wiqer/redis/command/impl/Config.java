@@ -4,7 +4,6 @@ import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
 import com.wiqer.redis.command.Command;
 import com.wiqer.redis.command.CommonCommandType;
-import com.wiqer.redis.core.RedisStringCore;
 import com.wiqer.redis.datatype.RedisString;
 import com.wiqer.redis.resp.BulkString;
 import com.wiqer.redis.resp.Resp;
@@ -14,7 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.List;
 
 @Slf4j
-public class Config extends AbstractCore<RedisStringCore, RedisString> implements Command {
+public class Config extends AbstractCore<RedisString> implements Command {
 
     private String param;
 
@@ -32,7 +31,7 @@ public class Config extends AbstractCore<RedisStringCore, RedisString> implement
             throw new IllegalStateException();
         }
         param = ((BulkString) array.get(2)).getContent().toUtf8String();
-        setRedisCore((RedisStringCore) redisCore);
+        setRedisCore(redisCore);
     }
 
     @Override

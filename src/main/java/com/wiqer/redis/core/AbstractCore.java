@@ -10,9 +10,9 @@ import java.util.List;
 import java.util.Set;
 
 @Setter
-public abstract class AbstractCore<T extends RedisCore, E extends RedisData> implements BaseHandle {
+public abstract class AbstractCore<E extends RedisData> implements BaseHandle {
 
-    private T redisCore;
+    private RedisCore redisCore;
 
     /**
      * 客户端连接管理

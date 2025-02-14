@@ -1,8 +1,8 @@
 package com.wiqer.redis.command.impl;
 
+import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.command.WriteCommandType;
 import com.wiqer.redis.command.WriteCommand;
 import com.wiqer.redis.datatype.BytesWrapper;
 import com.wiqer.redis.datatype.RedisData;
@@ -12,13 +12,13 @@ import com.wiqer.redis.resp.RespInt;
 
 import java.util.List;
 
-public class Ttl extends AbstractCore<RedisCore, RedisData> implements WriteCommand {
+public class Ttl extends AbstractCore<RedisData> implements WriteCommand {
 
     private BytesWrapper key;
 
     @Override
     public String type() {
-        return WriteCommandType.ttl.name();
+        return CommonCommandType.ttl.name();
     }
 
     @Override

@@ -15,7 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
-public class Info extends AbstractCore<RedisCore, RedisData> implements Command {
+public class Info extends AbstractCore<RedisData> implements Command {
 
     @Override
     public String type() {

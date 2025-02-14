@@ -11,7 +11,7 @@ import io.netty.channel.ChannelHandlerContext;
 
 import java.util.List;
 
-public class Quit extends AbstractCore<RedisCore, RedisData> implements Command {
+public class Quit extends AbstractCore<RedisData> implements Command {
     @Override
     public String type() {
         return CommonCommandType.quit.name();

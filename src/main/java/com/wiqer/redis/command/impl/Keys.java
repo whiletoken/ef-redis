@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 @Slf4j
-public class Keys extends AbstractCore<RedisCore, RedisData> implements Command {
+public class Keys extends AbstractCore<RedisData> implements Command {
 
     String pattern = "";
 

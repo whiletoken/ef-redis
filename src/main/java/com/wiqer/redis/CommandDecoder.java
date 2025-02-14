@@ -3,7 +3,7 @@ package com.wiqer.redis;
 import com.wiqer.redis.aof.Aof;
 import com.wiqer.redis.command.Command;
 import com.wiqer.redis.command.CommonCommandFactory;
-import com.wiqer.redis.command.WriteCommandFactory;
+import com.wiqer.redis.core.RedisCore;
 import com.wiqer.redis.resp.*;
 import com.wiqer.redis.util.TraceIdUtil;
 import io.netty.buffer.ByteBuf;
@@ -25,14 +25,12 @@ public class CommandDecoder extends LengthFieldBasedFrameDecoder {
     private static final String UNSUPPORTED_COMMAND_FORMAT = "unsupport command:%s";
 
     private final Aof aof;
+    private final RedisCore redisCore;
 
-    public CommandDecoder(Aof aof) {
+    public CommandDecoder(RedisCore redisCore, Aof aof) {
         super(MAX_FRAME_LENGTH, INITIAL_LENGTH_FIELD_OFFSET, LENGTH_FIELD_LENGTH);
         this.aof = aof;
-    }
-
-    public CommandDecoder() {
-        this(null);
+        this.redisCore = redisCore;
     }
 
     @Override
@@ -60,34 +58,15 @@ public class CommandDecoder extends LengthFieldBasedFrameDecoder {
     }
 
     private Object processCommand(ChannelHandlerContext ctx, List<Resp> respList) {
-        Command command;
-        if (respList.size() > 1) {
-            command = processWriteCommand(respList);
-        } else {
-            command = processReadCommand(respList);
-        }
+        Command command = processReadCommand(respList);
         if (command == null) {
             handleUnsupportedCommand(ctx, respList);
         }
         return command;
     }
 
-    private Command processWriteCommand(List<Resp> respList) {
-        if (aof == null) {
-            return null;
-        }
-        Command command = WriteCommandFactory.create(aof.getRedisCore()).from(respList);
-        if (command != null) {
-            aof.put(respList);
-        }
-        return command;
-    }
-
     private Command processReadCommand(List<Resp> respList) {
-        if (aof == null) {
-            return null;
-        }
-        return CommonCommandFactory.create(aof.getRedisCore()).from(respList);
+        return CommonCommandFactory.create(redisCore).from(respList);
     }
 
     private void handleUnsupportedCommand(ChannelHandlerContext ctx, List<Resp> respList) {

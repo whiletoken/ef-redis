@@ -14,7 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class Type extends AbstractCore<RedisCore, RedisData> implements Command {
+public class Type extends AbstractCore<RedisData> implements Command {
 
     private BytesWrapper key;
 

@@ -13,7 +13,7 @@ import io.netty.channel.ChannelHandlerContext;
 
 import java.util.List;
 
-public class Exists extends AbstractCore<RedisCore, RedisData> implements Command {
+public class Exists extends AbstractCore<RedisData> implements Command {
 
     private BytesWrapper key;
 

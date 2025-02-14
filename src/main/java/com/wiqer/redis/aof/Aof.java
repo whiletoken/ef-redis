@@ -1,9 +1,9 @@
 package com.wiqer.redis.aof;
 
+import com.wiqer.redis.command.CommonCommandFactory;
 import com.wiqer.redis.core.RedisCore;
 import com.wiqer.redis.aof.queue.RingBlockingQueue;
 import com.wiqer.redis.command.WriteCommand;
-import com.wiqer.redis.command.WriteCommandFactory;
 import com.wiqer.redis.resp.Resp;
 import com.wiqer.redis.util.Format;
 import com.wiqer.redis.util.PropertiesUtil;
@@ -249,7 +249,7 @@ public class Aof {
                         do {
                             try {
                                 List<Resp> list = Resp.decode(bufferPolled);
-                                WriteCommand command = WriteCommandFactory.create(redisCore).from(list);
+                                WriteCommand command = (WriteCommand) CommonCommandFactory.create(redisCore).from(list);
                                 command.handle();
                             } catch (Exception e) {
                                 break Segment;

@@ -12,7 +12,7 @@ import io.netty.channel.ChannelHandlerContext;
 
 import java.util.List;
 
-public class Select extends AbstractCore<RedisCore, RedisData> implements Command {
+public class Select extends AbstractCore<RedisData> implements Command {
 
     private Integer index;
 

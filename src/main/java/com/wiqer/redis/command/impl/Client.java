@@ -16,7 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.List;
 
 @Slf4j
-public class Client extends AbstractCore<RedisCore, RedisData> implements Command {
+public class Client extends AbstractCore<RedisData> implements Command {
 
     private String subCommand;
     private List<Resp> array;

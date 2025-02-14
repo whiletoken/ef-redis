@@ -1,10 +1,9 @@
 package com.wiqer.redis.command.impl;
 
+import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.command.WriteCommandType;
 import com.wiqer.redis.command.WriteCommand;
-import com.wiqer.redis.core.RedisStringCore;
 import com.wiqer.redis.datatype.BytesWrapper;
 import com.wiqer.redis.datatype.RedisString;
 import com.wiqer.redis.resp.BulkString;
@@ -16,18 +15,18 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.List;
 
 @Slf4j
-public class Decr extends AbstractCore<RedisStringCore, RedisString> implements WriteCommand {
+public class Decr extends AbstractCore<RedisString> implements WriteCommand {
 
     private BytesWrapper key;
 
     @Override
     public String type() {
-        return WriteCommandType.decr.name();
+        return CommonCommandType.decr.name();
     }
 
     @Override
     public void init(RedisCore redisCore, List<Resp> array) {
-        setRedisCore((RedisStringCore) redisCore);
+        setRedisCore(redisCore);
         key = ((BulkString) array.get(1)).getContent();
     }
 

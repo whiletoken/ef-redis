@@ -1,6 +1,7 @@
 package com.wiqer.redis.command;
 
 import com.wiqer.redis.core.RedisCore;
+import com.wiqer.redis.resp.BulkString;
 import com.wiqer.redis.resp.Resp;
 import com.wiqer.redis.resp.SimpleString;
 import com.wiqer.redis.util.TraceIdUtil;
@@ -42,19 +43,17 @@ public class CommonCommandFactory {
             throw new IllegalArgumentException("Commands list cannot be null or empty");
         }
 
-        if (!(commands.get(0) instanceof SimpleString simpleString)) {
-            throw new IllegalArgumentException("First command must be a SimpleString");
+        Resp simpleString = commands.get(0);
+        if (simpleString instanceof BulkString) {
+            String commandName = ((BulkString) simpleString).getContent().toUtf8String();
+            Command command = getCommand(commandName);
+            if (command == null) {
+                throw new UnsupportedOperationException("Unsupported command: " + commandName);
+            }
+            command.init(redisCore, commands);
+            return command;
         }
-
-        String commandName = simpleString.getContent().toLowerCase();
-        Command command = getCommand(commandName);
-
-        if (command == null) {
-            throw new UnsupportedOperationException("Unsupported command: " + commandName);
-        }
-
-        command.init(redisCore, commands);
-        return command;
+        throw new IllegalArgumentException("Commands not supported");
     }
 
     private Command getCommand(String commandName) {

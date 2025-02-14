@@ -2,7 +2,6 @@ package com.wiqer.redis.command.impl.set;
 
 import com.wiqer.redis.core.AbstractCore;
 import com.wiqer.redis.core.RedisCore;
-import com.wiqer.redis.core.RedisSetCore;
 import com.wiqer.redis.command.Command;
 import com.wiqer.redis.command.CommonCommandType;
 import com.wiqer.redis.datatype.RedisSet;
@@ -12,7 +11,7 @@ import io.netty.channel.ChannelHandlerContext;
 
 import java.util.List;
 
-public class Scan extends AbstractCore<RedisSetCore, RedisSet> implements Command {
+public class Scan extends AbstractCore<RedisSet> implements Command {
 
     @Override
     public String type() {
@@ -21,7 +20,7 @@ public class Scan extends AbstractCore<RedisSetCore, RedisSet> implements Comman
 
     @Override
     public void init(RedisCore redisCore, List<Resp> array) {
-        setRedisCore((RedisSetCore) redisCore);
+        setRedisCore(redisCore);
     }
 
     @Override
