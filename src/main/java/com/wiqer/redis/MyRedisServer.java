@@ -3,7 +3,6 @@ package com.wiqer.redis;
 import com.wiqer.redis.aof.Aof;
 import com.wiqer.redis.channel.DefaultChannelSelectStrategy;
 import com.wiqer.redis.channel.LocalChannelOption;
-import com.wiqer.redis.channel.single.NettySingleSelectChannelOption;
 import com.wiqer.redis.core.RedisCore;
 import com.wiqer.redis.util.PropertiesUtil;
 import io.netty.bootstrap.ServerBootstrap;
@@ -16,7 +15,6 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.util.concurrent.EventExecutorGroup;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.InetSocketAddress;
@@ -35,7 +33,6 @@ public class MyRedisServer implements RedisServer, AutoCloseable {
     private static final String SERVER_START_FAILED = "Redis服务器启动失败";
     private static final String SERVER_SHUTDOWN = "Redis服务器正在关闭...";
 
-    @Getter
     private final RedisCore redisCore;
     private final ServerBootstrap serverBootstrap;
     private final EventExecutorGroup redisSingleEventExecutor;
@@ -101,7 +98,6 @@ public class MyRedisServer implements RedisServer, AutoCloseable {
             serverChannelFuture = serverBootstrap.bind().sync();
             isRunning = true;
             log.info(SERVER_START_SUCCESS, serverChannelFuture.channel().localAddress());
-            serverChannelFuture.channel().closeFuture().sync().channel();
         } catch (Exception e) {
             log.error(SERVER_START_FAILED, e);
             close();
@@ -159,14 +155,6 @@ public class MyRedisServer implements RedisServer, AutoCloseable {
                 log.warn("{} 关闭被中断", executorName, e);
                 Thread.currentThread().interrupt();
             }
-        }
-    }
-
-    public static void main(String[] args) {
-        try (MyRedisServer server = new MyRedisServer(new NettySingleSelectChannelOption())) {
-            server.start();
-            // 添加关闭钩子
-            Runtime.getRuntime().addShutdownHook(new Thread(server::close));
         }
     }
 
