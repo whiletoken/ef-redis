@@ -13,77 +13,72 @@ public interface Resp {
 
     static void write(List<Resp> list, ByteBuf buffer) {
         if (list == null || list.isEmpty()) {
-            throw new IllegalArgumentException();
+            throw new IllegalArgumentException("响应列表不能为空");
         }
+
         if (list.size() == 1) {
-            Resp resp = list.get(0);
-            if (resp instanceof SimpleString) {
-                buffer.writeByte(RespType.STATUS.getCode());
-                String content = ((SimpleString) resp).getContent();
-                char[] charArray = content.toCharArray();
-                for (char each : charArray) {
-                    buffer.writeByte((byte) each);
-                }
-                buffer.writeByte(RespType.R.getCode());
-                buffer.writeByte(RespType.N.getCode());
-            } else if (resp instanceof Errors) {
-                buffer.writeByte(RespType.ERROR.getCode());
-                String content = ((Errors) resp).getContent();
-                char[] charArray = content.toCharArray();
-                for (char each : charArray) {
-                    buffer.writeByte((byte) each);
-                }
-                buffer.writeByte(RespType.R.getCode());
-                buffer.writeByte(RespType.N.getCode());
-            } else if (resp instanceof RespInt) {
-                buffer.writeByte(RespType.INTEGER.getCode());
-                String content = String.valueOf(((RespInt) resp).getValue());
-                char[] charArray = content.toCharArray();
-                for (char each : charArray) {
-                    buffer.writeByte((byte) each);
-                }
-                buffer.writeByte(RespType.R.getCode());
-                buffer.writeByte(RespType.N.getCode());
-            } else if (resp instanceof BulkString) {
-                buffer.writeByte(RespType.BULK.getCode());
-                BytesWrapper content = ((BulkString) resp).getContent();
-                if (content == null) {
-                    buffer.writeByte(RespType.ERROR.getCode());
-                    buffer.writeByte(RespType.ONE.getCode());
-                    buffer.writeByte(RespType.R.getCode());
-                    buffer.writeByte(RespType.N.getCode());
-                } else if (content.getByteArray().length == 0) {
-                    buffer.writeByte(RespType.ZERO.getCode());
-                    buffer.writeByte(RespType.R.getCode());
-                    buffer.writeByte(RespType.N.getCode());
-                    buffer.writeByte(RespType.R.getCode());
-                    buffer.writeByte(RespType.N.getCode());
-                } else {
-                    String length = String.valueOf(content.getByteArray().length);
-                    char[] charArray = length.toCharArray();
-                    for (char each : charArray) {
-                        buffer.writeByte((byte) each);
-                    }
-                    buffer.writeByte(RespType.R.getCode());
-                    buffer.writeByte(RespType.N.getCode());
-                    buffer.writeBytes(content.getByteArray());
-                    buffer.writeByte(RespType.R.getCode());
-                    buffer.writeByte(RespType.N.getCode());
-                }
-            }
+            writeSingleResp(list.get(0), buffer);
         } else {
-            buffer.writeByte(RespType.MULTYBULK.getCode());
-            String length = String.valueOf(list.size());
-            char[] charArray = length.toCharArray();
-            for (char each : charArray) {
-                buffer.writeByte((byte) each);
-            }
-            buffer.writeByte(RespType.R.getCode());
-            buffer.writeByte(RespType.N.getCode());
-            for (Resp each : list) {
-                write(List.of(each), buffer);
-            }
+            writeMultiBulk(list, buffer);
         }
+    }
+
+    private static void writeSingleResp(Resp resp, ByteBuf buffer) {
+        if (resp instanceof SimpleString) {
+            writeSimpleString(RespType.STATUS.getCode(), ((SimpleString) resp).getContent(), buffer);
+        } else if (resp instanceof Errors) {
+            writeSimpleString(RespType.ERROR.getCode(), ((Errors) resp).getContent(), buffer);
+        } else if (resp instanceof RespInt) {
+            writeSimpleString(RespType.INTEGER.getCode(), String.valueOf(((RespInt) resp).getValue()), buffer);
+        } else if (resp instanceof BulkString) {
+            writeBulkString((BulkString) resp, buffer);
+        }
+    }
+
+    private static void writeSimpleString(byte typeCode, String content, ByteBuf buffer) {
+        buffer.writeByte(typeCode);
+        writeString(content, buffer);
+        writeCRLF(buffer);
+    }
+
+    private static void writeBulkString(BulkString resp, ByteBuf buffer) {
+        buffer.writeByte(RespType.BULK.getCode());
+        BytesWrapper content = resp.getContent();
+
+        if (content == null) {
+            buffer.writeByte(RespType.ERROR.getCode());
+            buffer.writeByte(RespType.ONE.getCode());
+            writeCRLF(buffer);
+        } else if (content.getByteArray().length == 0) {
+            buffer.writeByte(RespType.ZERO.getCode());
+            writeCRLF(buffer);
+            writeCRLF(buffer);
+        } else {
+            writeString(String.valueOf(content.getByteArray().length), buffer);
+            writeCRLF(buffer);
+            buffer.writeBytes(content.getByteArray());
+            writeCRLF(buffer);
+        }
+    }
+
+    private static void writeMultiBulk(List<Resp> list, ByteBuf buffer) {
+        buffer.writeByte(RespType.MULTYBULK.getCode());
+        writeString(String.valueOf(list.size()), buffer);
+        writeCRLF(buffer);
+        for (Resp each : list) {
+            write(List.of(each), buffer);
+        }
+    }
+
+    private static void writeString(String content, ByteBuf buffer) {
+        for (char each : content.toCharArray()) {
+            buffer.writeByte((byte) each);
+        }
+    }
+
+    private static void writeCRLF(ByteBuf buffer) {
+        buffer.writeByte(RespType.R.getCode());
+        buffer.writeByte(RespType.N.getCode());
     }
 
     /**
@@ -118,7 +113,8 @@ public interface Resp {
                     content = new byte[length];
                     buffer.readBytes(content);
                 }
-                if (buffer.readByte() != RespType.R.getCode() || buffer.readByte() != RespType.N.getCode()) {
+                if (buffer.readByte() != RespType.R.getCode()
+                        || buffer.readByte() != RespType.N.getCode()) {
                     throw new IllegalStateException("没有读取到完整的命令");
                 }
                 return List.of(new BulkString(new BytesWrapper(content)));
@@ -152,7 +148,8 @@ public interface Resp {
         } else {
             value = t - RespType.ZERO.getCode();
         }
-        while (buffer.readableBytes() > 0 && (t = (char) buffer.readByte()) != RespType.R.getCode()) {
+        while (buffer.readableBytes() > 0
+                && (t = (char) buffer.readByte()) != RespType.R.getCode()) {
             value = value * 10 + (t - RespType.ZERO.getCode());
         }
         if (buffer.readableBytes() == 0 || buffer.readByte() != RespType.N.getCode()) {
@@ -167,7 +164,8 @@ public interface Resp {
     static String getString(ByteBuf buffer) {
         char c;
         StringBuilder builder = new StringBuilder();
-        while (buffer.readableBytes() > 0 && (c = (char) buffer.readByte()) != RespType.R.getCode()) {
+        while (buffer.readableBytes() > 0
+                && (c = (char) buffer.readByte()) != RespType.R.getCode()) {
             builder.append(c);
         }
         if (buffer.readableBytes() == 0 || buffer.readByte() != RespType.N.getCode()) {

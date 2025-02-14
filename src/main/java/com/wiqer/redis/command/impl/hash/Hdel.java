@@ -13,7 +13,6 @@ import com.wiqer.redis.resp.RespInt;
 
 import java.util.List;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class Hdel extends AbstractCore<RedisHashCore, RedisHash> implements WriteCommand {
 
@@ -27,14 +26,35 @@ public class Hdel extends AbstractCore<RedisHashCore, RedisHash> implements Writ
 
     @Override
     public void init(RedisCore redisCore, List<Resp> array) {
+        if (array == null || array.size() < 3) {
+            throw new IllegalArgumentException("HDEL命令至少需要一个key和一个field");
+        }
+
         setRedisCore((RedisHashCore) redisCore);
         key = ((BulkString) array.get(1)).getContent();
-        fields = Stream.of(array).skip(2).map(resp -> ((BulkString) resp).getContent()).collect(Collectors.toList());
+
+        // 使用更高效的方式收集fields
+        fields = array.subList(2, array.size()).stream()
+                .map(resp -> {
+                    if (!(resp instanceof BulkString)) {
+                        throw new IllegalArgumentException("HDEL命令参数必须是字符串");
+                    }
+                    return ((BulkString) resp).getContent();
+                })
+                .collect(Collectors.toList());
     }
 
     @Override
     public Resp handle() {
+        if (key == null || fields.isEmpty()) {
+            return RespInt.ZERO;
+        }
+
         RedisHash redisHash = get(key);
+        if (redisHash == null) {
+            return RespInt.ZERO;
+        }
+
         return new RespInt(redisHash.del(fields));
     }
 }

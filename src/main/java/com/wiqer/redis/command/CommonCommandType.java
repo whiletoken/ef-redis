@@ -9,10 +9,15 @@ import com.wiqer.redis.command.impl.string.*;
 import com.wiqer.redis.command.impl.zset.Zrevrange;
 import lombok.Getter;
 
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 @Getter
-public enum CommonCommandType  {
+public enum CommonCommandType {
     auth(Auth::new),
     config(Config::new),
     scan(Scan::new),//
@@ -38,12 +43,26 @@ public enum CommonCommandType  {
         this.supplier = supplier;
     }
 
+    private static final Map<String, CommonCommandType> COMMAND_MAP;
+
+    static {
+        COMMAND_MAP = Arrays.stream(values())
+                .collect(Collectors.toMap(
+                        CommonCommandType::name,
+                        Function.identity(),
+                        (existing, replacement) -> existing,
+                        HashMap::new
+                ));
+    }
+
     public static CommonCommandType getType(String commandName) {
-        for (CommonCommandType value : values()) {
-            if (value.name().equals(commandName)) {
-                return value;
-            }
+        if (commandName == null) {
+            throw new IllegalArgumentException("Command name cannot be null");
         }
-        throw new RuntimeException("command not found");
+        CommonCommandType type = COMMAND_MAP.get(commandName.toLowerCase());
+        if (type == null) {
+            throw new IllegalArgumentException("Unsupported command: " + commandName);
+        }
+        return type;
     }
 }

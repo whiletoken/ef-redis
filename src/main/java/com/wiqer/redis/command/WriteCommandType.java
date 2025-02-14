@@ -43,11 +43,10 @@ public enum WriteCommandType {
     }
 
     public static WriteCommandType getType(String commandName) {
-        for (WriteCommandType value : values()) {
-            if (value.name().equals(commandName)) {
-                return value;
-            }
+        try {
+            return valueOf(commandName.toLowerCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("不支持的命令类型: " + commandName, e);
         }
-        throw new RuntimeException("command not found");
     }
 }

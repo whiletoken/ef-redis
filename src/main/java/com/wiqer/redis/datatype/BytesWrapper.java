@@ -5,26 +5,24 @@ import lombok.EqualsAndHashCode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-
 /**
  * @author lilan
  */
 @EqualsAndHashCode
 public class BytesWrapper implements Comparable<BytesWrapper> {
 
-    static final Charset CHARSET = StandardCharsets.UTF_8;
+    private static final Charset CHARSET = StandardCharsets.UTF_8;
+
+    public static final BytesWrapper ZERO = new BytesWrapper("0".getBytes(CHARSET));
 
     private final byte[] content;
 
-    public static final BytesWrapper ZERO = new BytesWrapper("0".getBytes(UTF_8));
-
     public BytesWrapper(byte[] content) {
-        this.content = content;
+        this.content = content.clone();
     }
 
     public byte[] getByteArray() {
-        return content;
+        return content.clone();
     }
 
     public String toUtf8String() {
@@ -33,19 +31,20 @@ public class BytesWrapper implements Comparable<BytesWrapper> {
 
     @Override
     public int compareTo(BytesWrapper o) {
+        if (this == o) return 0;
+        if (o == null) return 1;
+        
+        byte[] v2 = o.content;
         int len1 = content.length;
-        int len2 = o.getByteArray().length;
+        int len2 = v2.length;
         int lim = Math.min(len1, len2);
-        byte[] v2 = o.getByteArray();
 
-        int k = 0;
-        while (k < lim) {
+        for (int k = 0; k < lim; k++) {
             byte c1 = content[k];
             byte c2 = v2[k];
             if (c1 != c2) {
                 return c1 - c2;
             }
-            k++;
         }
         return len1 - len2;
     }

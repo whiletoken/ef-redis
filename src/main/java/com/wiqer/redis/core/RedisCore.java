@@ -19,9 +19,12 @@ public class RedisCore implements BaseHandle {
     /**
      * 客户端可能使用hash路由，更换为跳表更好的避免hash冲突
      */
-    private final ConcurrentNavigableMap<BytesWrapper, RedisData> map = new ConcurrentSkipListMap<>();
+    private final ConcurrentNavigableMap<BytesWrapper, RedisData> map =
+            new ConcurrentSkipListMap<>();
 
-    private final ConcurrentHashMap<BytesWrapper, Channel> clients = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<BytesWrapper, Channel> clients =
+            new ConcurrentHashMap<>();
+
     private final Map<Channel, BytesWrapper> clientNames = new ConcurrentHashMap<>();
 
     @Override
@@ -44,26 +47,34 @@ public class RedisCore implements BaseHandle {
         map.put(key, redisData);
     }
 
+    /**
+     * 优化过期键的清理逻辑
+     */
     @Override
     public RedisData get(BytesWrapper key) {
         RedisData redisData = map.get(key);
-        if (redisData == null) {
-            return null;
-        }
-        if (redisData.timeout() == -1) {
-            return redisData;
-        }
-        if (redisData.timeout() < System.currentTimeMillis()) {
-            map.remove(key);
+        if (redisData == null || isExpired(redisData)) {
+            if (redisData != null) {
+                map.remove(key);
+            }
             return null;
         }
         return redisData;
     }
 
+    /**
+     * 判断数据是否过期
+     */
+    private boolean isExpired(RedisData redisData) {
+        long timeout = redisData.timeout();
+        return timeout != -1 && timeout < System.currentTimeMillis();
+    }
+
     @Override
     public long remove(List<BytesWrapper> keys) {
-        keys.forEach(map::remove);
-        return keys.size();
+        return keys.stream()
+                .filter(key -> map.remove(key) != null)
+                .count();
     }
 
     public void cleanAll() {

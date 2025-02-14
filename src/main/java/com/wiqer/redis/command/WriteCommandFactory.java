@@ -11,37 +11,49 @@ import java.util.List;
 @Slf4j
 public class WriteCommandFactory {
 
-    public static final Object obj = new Object();
-    private static volatile WriteCommandFactory factory;
+    private static volatile WriteCommandFactory INSTANCE;
     private final RedisCore redisCore;
 
-    public WriteCommandFactory(RedisCore redisCore) {
+    private WriteCommandFactory(RedisCore redisCore) {
         this.redisCore = redisCore;
     }
 
     public static WriteCommandFactory create(RedisCore redisCore) {
-        if (factory == null) {
-            synchronized (obj) {
-                if (factory == null) {
-                    factory = new WriteCommandFactory(redisCore);
+        if (INSTANCE == null) {
+            synchronized (WriteCommandFactory.class) {
+                if (INSTANCE == null) {
+                    INSTANCE = new WriteCommandFactory(redisCore);
                 }
             }
         }
-        return factory;
+        return INSTANCE;
     }
 
     public WriteCommand from(List<Resp> arrays) {
-        String commandName = ((BulkString) arrays.get(0)).getContent().toUtf8String().toLowerCase();
-        WriteCommand command = getCommand(commandName);
-        command.init(factory.redisCore, arrays);
+        if (arrays == null || arrays.isEmpty()) {
+            throw new IllegalArgumentException("命令数组不能为空");
+        }
+
+        Resp firstElement = arrays.get(0);
+        if (!(firstElement instanceof BulkString)) {
+            throw new IllegalArgumentException("命令格式错误");
+        }
+
+        String commandName = ((BulkString) firstElement).getContent().toUtf8String().toLowerCase();
+        WriteCommand command = createCommand(commandName);
+        if (command == null) {
+            throw new UnsupportedOperationException("不支持的命令：" + commandName);
+        }
+
+        command.init(redisCore, arrays);
         return command;
     }
 
-    private WriteCommand getCommand(String commandName) {
+    private WriteCommand createCommand(String commandName) {
         try {
             return WriteCommandType.getType(commandName).getSupplier().get();
-        } catch (Throwable e) {
-            log.debug("traceId:{} 不支持的命令：{},数据读取异常", TraceIdUtil.currentTraceId(), commandName);
+        } catch (Exception e) {
+            log.error("traceId:{} 创建命令失败：{}", TraceIdUtil.currentTraceId(), commandName, e);
             return null;
         }
     }

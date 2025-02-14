@@ -11,8 +11,11 @@ import java.util.List;
 @Slf4j
 public class CommonCommandFactory {
 
-    public static final Object obj = new Object();
-    private static volatile CommonCommandFactory factory;
+    // 使用静态内部类实现单例模式，更加线程安全且延迟加载
+    private static class SingletonHolder {
+        private static volatile CommonCommandFactory instance;
+    }
+
     private final RedisCore redisCore;
 
     public CommonCommandFactory(RedisCore redisCore) {
@@ -20,21 +23,37 @@ public class CommonCommandFactory {
     }
 
     public static CommonCommandFactory create(RedisCore redisCore) {
-        if (factory == null) {
-            synchronized (obj) {
-                if (factory == null) {
-                    factory = new CommonCommandFactory(redisCore);
+        if (redisCore == null) {
+            throw new IllegalArgumentException("RedisCore cannot be null");
+        }
+
+        if (SingletonHolder.instance == null) {
+            synchronized (CommonCommandFactory.class) {
+                if (SingletonHolder.instance == null) {
+                    SingletonHolder.instance = new CommonCommandFactory(redisCore);
                 }
             }
         }
-        return factory;
+        return SingletonHolder.instance;
     }
 
-    public Command from(List<Resp> string) {
-        SimpleString simpleString = (SimpleString) string.get(0);
+    public Command from(List<Resp> commands) {
+        if (commands == null || commands.isEmpty()) {
+            throw new IllegalArgumentException("Commands list cannot be null or empty");
+        }
+
+        if (!(commands.get(0) instanceof SimpleString simpleString)) {
+            throw new IllegalArgumentException("First command must be a SimpleString");
+        }
+
         String commandName = simpleString.getContent().toLowerCase();
         Command command = getCommand(commandName);
-        command.init(factory.redisCore, string);
+
+        if (command == null) {
+            throw new UnsupportedOperationException("Unsupported command: " + commandName);
+        }
+
+        command.init(redisCore, commands);
         return command;
     }
 
@@ -42,7 +61,11 @@ public class CommonCommandFactory {
         try {
             return CommonCommandType.getType(commandName).getSupplier().get();
         } catch (Throwable e) {
-            log.debug("traceId:{} 不支持的命令：{},数据读取异常", TraceIdUtil.currentTraceId(), commandName);
+            log.error("traceId:{} Unsupported command: {}, error: {}",
+                    TraceIdUtil.currentTraceId(),
+                    commandName,
+                    e.getMessage()
+            );
             return null;
         }
     }

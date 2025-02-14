@@ -4,8 +4,6 @@ import com.wiqer.redis.aof.Aof;
 import com.wiqer.redis.channel.DefaultChannelSelectStrategy;
 import com.wiqer.redis.channel.LocalChannelOption;
 import com.wiqer.redis.channel.single.NettySingleSelectChannelOption;
-import com.wiqer.redis.command.CommonCommandFactory;
-import com.wiqer.redis.command.WriteCommandFactory;
 import com.wiqer.redis.core.RedisCore;
 import com.wiqer.redis.util.PropertiesUtil;
 import io.netty.bootstrap.ServerBootstrap;
@@ -22,79 +20,152 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author Administrator
  */
 @Slf4j
-public class MyRedisServer implements RedisServer {
+public class MyRedisServer implements RedisServer, AutoCloseable {
+    private static final int DEFAULT_BACKLOG = 1024;
+    private static final int DEFAULT_THREAD_COUNT = 1;
+    private static final String SERVER_START_SUCCESS = "Redis服务器启动成功 - 监听地址: {}";
+    private static final String SERVER_START_FAILED = "Redis服务器启动失败";
+    private static final String SERVER_SHUTDOWN = "Redis服务器正在关闭...";
 
-    private final RedisCore redisCore = new RedisCore();
-    private final ServerBootstrap serverBootstrap = new ServerBootstrap();
+    @Getter
+    private final RedisCore redisCore;
+    private final ServerBootstrap serverBootstrap;
     private final EventExecutorGroup redisSingleEventExecutor;
     private final LocalChannelOption channelOption;
+    private volatile boolean isRunning;
+    private ChannelFuture serverChannelFuture;
     private Aof aof;
-    private CommonCommandFactory commonCommandFactory;
-    private WriteCommandFactory writeCommandFactory;
 
     public MyRedisServer() {
-        channelOption = new DefaultChannelSelectStrategy().select();
-        this.redisSingleEventExecutor = new NioEventLoopGroup(1);
+        this(new DefaultChannelSelectStrategy().select());
     }
 
     public MyRedisServer(LocalChannelOption channelOption) {
+        this.redisCore = new RedisCore();
+        this.serverBootstrap = new ServerBootstrap();
         this.channelOption = channelOption;
-        this.redisSingleEventExecutor = new NioEventLoopGroup(1);
+        this.redisSingleEventExecutor = createEventExecutor();
+        this.isRunning = false;
     }
 
-    public static void main(String[] args) {
-        new MyRedisServer(new NettySingleSelectChannelOption()).start();
+    private EventExecutorGroup createEventExecutor() {
+        return new NioEventLoopGroup(DEFAULT_THREAD_COUNT, new ThreadFactory() {
+            private final AtomicInteger threadCount = new AtomicInteger(1);
+
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread thread = new Thread(r, "Redis-Worker-" + threadCount.getAndIncrement());
+                thread.setDaemon(true);
+                return thread;
+            }
+        });
     }
 
     @Override
     public void start() {
+        if (isRunning) {
+            log.warn("服务器已经在运行中");
+            return;
+        }
+        initializeAof();
+        configureAndStartServer();
+    }
+
+    private void initializeAof() {
         if (PropertiesUtil.getAppendOnly()) {
             aof = new Aof(this.redisCore);
         }
-        start0();
+    }
+
+    private void configureAndStartServer() {
+        try {
+            serverBootstrap.group(channelOption.boss(), channelOption.selectors())
+                    .channel(channelOption.getChannelClass())
+                    .handler(new LoggingHandler(LogLevel.INFO))
+                    .option(ChannelOption.SO_BACKLOG, DEFAULT_BACKLOG)
+                    .option(ChannelOption.SO_REUSEADDR, true)
+                    .option(ChannelOption.SO_KEEPALIVE, PropertiesUtil.getTcpKeepAlive())
+                    .localAddress(new InetSocketAddress(
+                            PropertiesUtil.getNodeAddress(),
+                            PropertiesUtil.getNodePort()))
+                    .childHandler(createChannelInitializer());
+
+            serverChannelFuture = serverBootstrap.bind().sync();
+            isRunning = true;
+            log.info(SERVER_START_SUCCESS, serverChannelFuture.channel().localAddress());
+        } catch (Exception e) {
+            log.error(SERVER_START_FAILED, e);
+            close();
+            throw new RuntimeException(SERVER_START_FAILED, e);
+        }
+    }
+
+    private ChannelInitializer<SocketChannel> createChannelInitializer() {
+        return new ChannelInitializer<>() {
+            @Override
+            protected void initChannel(SocketChannel socketChannel) {
+                ChannelPipeline pipeline = socketChannel.pipeline();
+                pipeline.addLast(
+                        new ResponseEncoder(),
+                        new CommandDecoder(aof)
+                );
+                pipeline.addLast(redisSingleEventExecutor, new CommandHandler());
+            }
+        };
     }
 
     @Override
     public void close() {
+        if (!isRunning) {
+            return;
+        }
+        log.info(SERVER_SHUTDOWN);
+        isRunning = false;
         try {
-            channelOption.boss().shutdownGracefully();
-            channelOption.selectors().shutdownGracefully();
-            redisSingleEventExecutor.shutdownGracefully();
-        } catch (Exception exception) {
-            log.error("Exception!", exception);
+            if (serverChannelFuture != null) {
+                serverChannelFuture.channel().close().sync();
+            }
+            shutdownExecutors();
+            if (aof != null) {
+                aof.close();
+            }
+        } catch (Exception e) {
+            log.error("关闭服务器时发生错误", e);
         }
     }
 
-    public void start0() {
-        serverBootstrap.group(channelOption.boss(), channelOption.selectors())
-                .channel(channelOption.getChannelClass())
-                .handler(new LoggingHandler(LogLevel.INFO))
-                .option(ChannelOption.SO_BACKLOG, 1024)
-                .option(ChannelOption.SO_REUSEADDR, true)
-                .option(ChannelOption.SO_KEEPALIVE, PropertiesUtil.getTcpKeepAlive())
-                .localAddress(new InetSocketAddress(PropertiesUtil.getNodeAddress(), PropertiesUtil.getNodePort()))
-                .childHandler(new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel socketChannel) {
-                        ChannelPipeline channelPipeline = socketChannel.pipeline();
-                        channelPipeline.addLast(
-                                new ResponseEncoder(),
-                                new CommandDecoder(aof)
-                        );
-                        channelPipeline.addLast(redisSingleEventExecutor, new CommandHandler());
-                    }
-                });
-        try {
-            ChannelFuture sync = serverBootstrap.bind().sync();
-            log.info(sync.channel().localAddress().toString());
-        } catch (InterruptedException e) {
-            log.warn("Interrupted!", e);
-            throw new RuntimeException(e);
+    private void shutdownExecutors() {
+        gracefulShutdown(channelOption.boss(), "Boss EventLoopGroup");
+        gracefulShutdown(channelOption.selectors(), "Worker EventLoopGroup");
+        gracefulShutdown(redisSingleEventExecutor, "Single EventExecutor");
+    }
+
+    private void gracefulShutdown(EventExecutorGroup executor, String executorName) {
+        if (executor != null && !executor.isShutdown()) {
+            try {
+                executor.shutdownGracefully()
+                        .sync()
+                        .await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                log.warn("{} 关闭被中断", executorName, e);
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        try (MyRedisServer server = new MyRedisServer(new NettySingleSelectChannelOption())) {
+            server.start();
+            // 添加关闭钩子
+            Runtime.getRuntime().addShutdownHook(new Thread(server::close));
         }
     }
 

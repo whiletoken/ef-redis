@@ -14,7 +14,13 @@ public abstract class AbstractCore<T extends RedisCore, E extends RedisData> imp
 
     private T redisCore;
 
+    /**
+     * 客户端连接管理
+     */
     public void putClient(BytesWrapper connectionName, Channel channelContext) {
+        if (connectionName == null || channelContext == null) {
+            throw new IllegalArgumentException("连接名称和通道上下文不能为空");
+        }
         redisCore.putClient(connectionName, channelContext);
     }
 
@@ -38,8 +44,14 @@ public abstract class AbstractCore<T extends RedisCore, E extends RedisData> imp
         return redisCore.keys();
     }
 
+    /**
+     * 批量删除优化
+     */
     @Override
     public long remove(List<BytesWrapper> keys) {
+        if (keys == null || keys.isEmpty()) {
+            return 0;
+        }
         return redisCore.remove(keys);
     }
 

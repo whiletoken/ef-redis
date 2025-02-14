@@ -12,7 +12,7 @@ public class ResponseEncoder extends MessageToByteEncoder<Resp> {
     @Override
     protected void encode(ChannelHandlerContext channelHandlerContext, Resp resp, ByteBuf byteBuf) {
         try {
-            Resp.write(List.of(resp), byteBuf);//msg.encode();
+            Resp.write(List.of(resp), byteBuf);
             byteBuf.writeBytes(byteBuf);
         } catch (Exception e) {
             channelHandlerContext.close();

@@ -9,6 +9,7 @@ import com.wiqer.redis.util.Format;
 import com.wiqer.redis.util.PropertiesUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
@@ -41,28 +42,52 @@ public class Aof {
     private static final String SUFFIX = ".aof";
     private static final int SHIFT_BIT = 26;
     private static final int ONE_PIECE = 1 << SHIFT_BIT;
+    private static final int INITIAL_BUFFER_SIZE = 8888;
+    private static final int MAX_BUFFER_SIZE = 2147483647;
+    private static final int QUEUE_INITIAL_CAPACITY = 8888;
+    private static final int QUEUE_MAX_CAPACITY = 888888;
+    private static final long CLEANUP_TIMEOUT_SECONDS = 5;
 
     private final AtomicLong aofPutIndex = new AtomicLong(0L);
-    private final String fileName = PropertiesUtil.getAofPath();
-    private final RingBlockingQueue<List<Resp>> runtimeRespQueue = new RingBlockingQueue<>(8888, 888888);
-    private final ByteBuf bufferPolled = PooledByteBufAllocator.DEFAULT.buffer(8888, 2147483647);
-    private final ScheduledThreadPoolExecutor persistenceExecutor = new ScheduledThreadPoolExecutor(1,
-            r -> new Thread(r, "Aof_Single_Thread"));
+    private final String fileName;
+    private final RingBlockingQueue<List<Resp>> runtimeRespQueue;
+    private final ByteBuf bufferPolled;
+    private final ScheduledThreadPoolExecutor persistenceExecutor;
+
+    @Getter
     private final RedisCore redisCore;
     private final ReadWriteLock reentrantLock = new ReentrantReadWriteLock();
+    private volatile boolean isRunning = true;
 
     public Aof(RedisCore redisCore) {
         this.redisCore = redisCore;
+        this.fileName = PropertiesUtil.getAofPath();
+        this.runtimeRespQueue = new RingBlockingQueue<>(QUEUE_INITIAL_CAPACITY, QUEUE_MAX_CAPACITY);
+        this.bufferPolled = PooledByteBufAllocator.DEFAULT.buffer(INITIAL_BUFFER_SIZE, MAX_BUFFER_SIZE);
+        this.persistenceExecutor = createExecutor();
+        initializeDirectory();
+        start();
+    }
+
+    private ScheduledThreadPoolExecutor createExecutor() {
+        return new ScheduledThreadPoolExecutor(1, r -> {
+            Thread thread = new Thread(r, "Aof_Single_Thread");
+            thread.setUncaughtExceptionHandler((t, e) ->
+                    log.error("Uncaught exception in AOF thread: ", e));
+            return thread;
+        });
+    }
+
+    private void initializeDirectory() {
         File file = new File(this.fileName + SUFFIX);
         if (!file.isDirectory()) {
             File parentFile = file.getParentFile();
-            if (null != parentFile && !parentFile.exists()) {
-                if (parentFile.mkdirs()) {
-                    log.info("parentFile mkdir succeed");
+            if (parentFile != null && !parentFile.exists()) {
+                if (!parentFile.mkdirs()) {
+                    log.error("Failed to create directory: {}", parentFile.getAbsolutePath());
                 }
             }
         }
-        start();
     }
 
     public void put(Resp resp) {
@@ -88,13 +113,21 @@ public class Aof {
     }
 
     public void close() {
+        isRunning = false;
         try {
-            persistenceExecutor.shutdownNow();
-            if (!persistenceExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                log.warn("AOF executor did not terminate gracefully");
+            persistenceExecutor.shutdown();
+            if (!persistenceExecutor.awaitTermination(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                persistenceExecutor.shutdownNow();
+                if (!persistenceExecutor.awaitTermination(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    log.error("AOF executor did not terminate");
+                }
+            }
+            if (bufferPolled != null && bufferPolled.refCnt() > 0) {
+                bufferPolled.release();
             }
         } catch (InterruptedException e) {
-            log.error("Interrupted while waiting for AOF executor to terminate", e);
+            Thread.currentThread().interrupt();
+            log.error("Interrupted while closing AOF", e);
         }
     }
 
@@ -103,79 +136,84 @@ public class Aof {
      * 该方法主要用于将Redis响应队列中的数据异步写入到持久化文件中
      */
     public void downDiskAllSegment() {
-        // 尝试获取写锁，如果成功则执行数据持久化操作
-        if (reentrantLock.writeLock().tryLock()) {
-            try {
-                long segmentId = -1;
-                // 遍历所有数据段，直到当前数据段与待写入索引指示的数据段一致
-                Segment:
-                while (segmentId != (aofPutIndex.get() >> SHIFT_BIT)) {
-                    segmentId = (aofPutIndex.get() >> SHIFT_BIT);
-                    // 打开或创建一个文件通道，用于读写指定的数据段文件
-                    try (RandomAccessFile randomAccessFile = new RandomAccessFile(fileName + "_" + segmentId + SUFFIX, "rw");
-                         FileChannel channel = randomAccessFile.getChannel()) {
-                        long len = channel.size();
-                        int putIndex = Format.uintNBit(aofPutIndex.get(), SHIFT_BIT);
-                        long baseOffset = aofPutIndex.get() - putIndex;
+        if (!isRunning || !reentrantLock.writeLock().tryLock()) {
+            return;
+        }
+        try {
+            processSegments();
+        } catch (Exception e) {
+            log.error("Error during disk write operation", e);
+        } finally {
+            reentrantLock.writeLock().unlock();
+        }
+    }
 
-                        // 调整数据段长度，确保有足够的空间写入数据
-                        if (len - putIndex < 1L << (SHIFT_BIT - 2)) {
-                            len = segmentId + 1 << (SHIFT_BIT - 2);
-                        }
+    private void processSegments() {
+        long segmentId = -1;
+        // 遍历所有数据段，直到当前数据段与待写入索引指示的数据段一致
+        Segment:
+        while (segmentId != (aofPutIndex.get() >> SHIFT_BIT)) {
+            segmentId = (aofPutIndex.get() >> SHIFT_BIT);
+            // 打开或创建一个文件通道，用于读写指定的数据段文件
+            try (RandomAccessFile randomAccessFile = new RandomAccessFile(fileName + "_" + segmentId + SUFFIX, "rw");
+                 FileChannel channel = randomAccessFile.getChannel()) {
+                long len = channel.size();
+                int putIndex = Format.uintNBit(aofPutIndex.get(), SHIFT_BIT);
+                long baseOffset = aofPutIndex.get() - putIndex;
 
-                        MappedByteBuffer mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
-
-                        // 循环处理响应队列中的数据，直到队列为空或数据写满当前数据段
-                        do {
-                            List<Resp> list = runtimeRespQueue.peek();
-                            if (list == null || list.isEmpty()) {
-                                clean(mappedByteBuffer);
-                                break Segment;
-                            }
-
-                            // 将响应数据序列化到缓冲区，并判断当前数据段是否有足够的空间写入
-                            Resp.write(list, bufferPolled);
-                            int respLen = bufferPolled.readableBytes();
-
-                            if ((mappedByteBuffer.capacity() <= respLen + putIndex)) {
-                                len += 1L << (SHIFT_BIT - 3);
-                                if (len > ONE_PIECE) {
-                                    bufferPolled.release();
-                                    aofPutIndex.set(baseOffset + ONE_PIECE);
-                                    break;
-                                }
-                                mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
-                            }
-
-                            // 将缓冲区中的数据写入到数据段文件中
-                            while (respLen > 0) {
-                                respLen--;
-                                mappedByteBuffer.put(putIndex++, bufferPolled.readByte());
-                            }
-
-                            aofPutIndex.set(baseOffset + putIndex);
-                            runtimeRespQueue.poll();
-                            bufferPolled.clear();
-
-                            // 根据需要扩展数据段长度，如果超出最大长度则进行清理并跳出循环
-                            if (len - putIndex < (1L << (SHIFT_BIT - 3))) {
-                                len += 1L << (SHIFT_BIT - 3);
-                                if (len > ONE_PIECE) {
-                                    bufferPolled.release();
-                                    clean(mappedByteBuffer);
-                                    aofPutIndex.set(baseOffset + ONE_PIECE);
-                                    break;
-                                }
-                                mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
-                            }
-                        } while (true);
-                    } catch (IOException e) {
-                        log.error("IO Exception in downDiskAllSegment", e);
-                    }
+                // 调整数据段长度，确保有足够的空间写入数据
+                if (len - putIndex < 1L << (SHIFT_BIT - 2)) {
+                    len = segmentId + 1 << (SHIFT_BIT - 2);
                 }
-            } finally {
-                // 释放写锁，确保其他线程可以进行数据持久化操作
-                reentrantLock.writeLock().unlock();
+
+                MappedByteBuffer mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
+
+                // 循环处理响应队列中的数据，直到队列为空或数据写满当前数据段
+                do {
+                    List<Resp> list = runtimeRespQueue.peek();
+                    if (list == null || list.isEmpty()) {
+                        clean(mappedByteBuffer);
+                        break Segment;
+                    }
+
+                    // 将响应数据序列化到缓冲区，并判断当前数据段是否有足够的空间写入
+                    Resp.write(list, bufferPolled);
+                    int respLen = bufferPolled.readableBytes();
+
+                    if ((mappedByteBuffer.capacity() <= respLen + putIndex)) {
+                        len += 1L << (SHIFT_BIT - 3);
+                        if (len > ONE_PIECE) {
+                            bufferPolled.release();
+                            aofPutIndex.set(baseOffset + ONE_PIECE);
+                            break;
+                        }
+                        mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
+                    }
+
+                    // 将缓冲区中的数据写入到数据段文件中
+                    while (respLen > 0) {
+                        respLen--;
+                        mappedByteBuffer.put(putIndex++, bufferPolled.readByte());
+                    }
+
+                    aofPutIndex.set(baseOffset + putIndex);
+                    runtimeRespQueue.poll();
+                    bufferPolled.clear();
+
+                    // 根据需要扩展数据段长度，如果超出最大长度则进行清理并跳出循环
+                    if (len - putIndex < (1L << (SHIFT_BIT - 3))) {
+                        len += 1L << (SHIFT_BIT - 3);
+                        if (len > ONE_PIECE) {
+                            bufferPolled.release();
+                            clean(mappedByteBuffer);
+                            aofPutIndex.set(baseOffset + ONE_PIECE);
+                            break;
+                        }
+                        mappedByteBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, len);
+                    }
+                } while (true);
+            } catch (IOException e) {
+                log.error("IO Exception in downDiskAllSegment", e);
             }
         }
     }
