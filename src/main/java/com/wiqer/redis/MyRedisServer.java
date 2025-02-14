@@ -1,8 +1,8 @@
 package com.wiqer.redis;
 
 import com.wiqer.redis.aof.Aof;
-import com.wiqer.redis.channel.DefaultChannelSelectStrategy;
-import com.wiqer.redis.channel.LocalChannelOption;
+import com.wiqer.redis.netty.channel.DefaultChannelSelectStrategy;
+import com.wiqer.redis.netty.channel.LocalChannelOption;
 import com.wiqer.redis.core.RedisCore;
 import com.wiqer.redis.util.PropertiesUtil;
 import io.netty.bootstrap.ServerBootstrap;
